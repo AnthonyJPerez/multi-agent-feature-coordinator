@@ -38,8 +38,8 @@ Instructions for agents (and people) changing this repository.
 - Bash 3.2 compatible (macOS default): no associative arrays, `mapfile`,
   `${var,,}`, negative indexes; expand possibly-empty arrays with
   `${a[@]+"${a[@]}"}`.
-- No runtime dependencies beyond `git` and POSIX tools. `jq` is allowed in
-  development scripts only.
+- No runtime dependencies beyond `git` and POSIX tools. `jq` and `python3`
+  are allowed in tests and development scripts only.
 - Invoke scripts with `bash <path>`; packagers may strip executable bits.
   The one exception is `hooks/run-hook.cmd`: harnesses execute it directly,
   so it must stay executable (git mode 100755). A live test in Claude Code
@@ -56,10 +56,13 @@ Instructions for agents (and people) changing this repository.
   `json_values`).
 - Parse JSON with `fc_json_load` (awk), not `[[ =~ ]]`: macOS's regex engine
   is pathologically slow on large payloads and differs on edge cases.
-- In tests, put a JSON payload with escaped quotes in a variable and pass
-  the variable: bash 3.2 mangles `\"` inside `"$(...)"`, most visibly
-  for arrays. A mangled payload makes the guard fail open, so a test that
-  expects exit 0 can pass for the wrong reason.
+- bash 3.2 brace-expands inside a quoted command substitution that has
+  quoted words of its own: `"$(f "{\"a\":1,\"b\":2}")"` runs `f` once per
+  alternative. Build such arguments with a helper or in a variable (the
+  guard tests use `obj`); the lint suite runs
+  `tests/shell-lint/bash32-braces.py` to catch the pattern. The guard fails
+  open on a malformed payload, so a mangled test payload can make an
+  "expect 0" test pass for the wrong reason.
 
 ## Before you commit
 

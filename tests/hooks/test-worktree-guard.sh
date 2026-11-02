@@ -25,9 +25,14 @@ fw lock G-1 >/dev/null 2>&1
 
 json_escape() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
 
-# A malformed test payload makes the guard fail open, which would let an
-# "expect 0" test pass for the wrong reason (bash 3.2 can mangle \" inside
-# "$(...)"), so the helpers refuse to send one.
+# Build payloads with obj (or in a variable), never as "{\"k\":\"v\",...}"
+# literals inside "$(...)": bash 3.2 brace-expands those, running the command
+# once per key (see AGENTS.md). A malformed payload makes the guard fail
+# open, which would let an "expect 0" test pass for the wrong reason, so the
+# helpers refuse to send one.
+obj() {  # KEY VALUE ... -> JSON object of strings
+  python3 -c 'import json,sys; a=sys.argv[1:]; print(json.dumps(dict(zip(a[::2], a[1::2]))))' "$@"
+}
 valid_json() { python3 -c 'import json,sys; json.loads(sys.argv[1])' "$1" 2>/dev/null; }
 bad_input() {
   printf 'test bug: input is not valid JSON: %s\n' "$1" >"$TEST_ROOT/guard.err"
@@ -51,22 +56,22 @@ expect() {  # DESC RC OUTPUT
 }
 
 section "file tools"
-expect "edit in own worktree" 0 "$(claude "$A" Edit "{\"file_path\":\"$A/src/x.go\",\"old_string\":\"a\",\"new_string\":\"b\"}")"
+expect "edit in own worktree" 0 "$(claude "$A" Edit "$(obj file_path "$A/src/x.go" old_string a new_string b)")"
 expect "edit in a sibling worktree" 2 "$(claude "$A" Edit "{\"file_path\":\"$B/src/x.go\"}")"
 assert_contains "reason names the owner" "$(cat "$TEST_ROOT/guard.err")" "svc-b's repository"
 assert_contains "reason offers the mailbox" "$(cat "$TEST_ROOT/guard.err")" "mail G-1 send --from svc-a --to coordinator"
-expect "write to a main checkout" 2 "$(claude "$A" Write "{\"file_path\":\"$WS/svc-a/README.md\",\"content\":\"x\"}")"
-expect "write to another repo in the workspace" 2 "$(claude "$A" Write "{\"file_path\":\"$WS/unrelated/x\",\"content\":\"x\"}")"
-expect "write to the feature state" 0 "$(claude "$A" Write "{\"file_path\":\"$STATE/mail/coordinator/m.md\",\"content\":\"x\"}")"
-expect "write to a temp dir" 0 "$(claude "$A" Write "{\"file_path\":\"/tmp/fc-scratch.txt\",\"content\":\"x\"}")"
-expect "relative path inside" 0 "$(claude "$A" Write "{\"file_path\":\"src/y.go\",\"content\":\"x\"}")"
-expect "relative path escaping" 2 "$(claude "$A" Write "{\"file_path\":\"../../../svc-b/x\",\"content\":\"x\"}")"
+expect "write to a main checkout" 2 "$(claude "$A" Write "$(obj file_path "$WS/svc-a/README.md" content x)")"
+expect "write to another repo in the workspace" 2 "$(claude "$A" Write "$(obj file_path "$WS/unrelated/x" content x)")"
+expect "write to the feature state" 0 "$(claude "$A" Write "$(obj file_path "$STATE/mail/coordinator/m.md" content x)")"
+expect "write to a temp dir" 0 "$(claude "$A" Write "$(obj file_path "/tmp/fc-scratch.txt" content x)")"
+expect "relative path inside" 0 "$(claude "$A" Write "$(obj file_path "src/y.go" content x)")"
+expect "relative path escaping" 2 "$(claude "$A" Write "$(obj file_path "../../../svc-b/x" content x)")"
 expect "coordinator edits the anchor" 0 "$(claude "$C" Edit "{\"file_path\":\"$C/docs/features/G-1/plan.md\"}")"
 expect "coordinator edits a worker repo" 2 "$(claude "$C" Edit "{\"file_path\":\"$A/src/x.go\"}")"
 expect "notebook edit outside" 2 "$(claude "$A" NotebookEdit "{\"notebook_path\":\"$B/n.ipynb\"}")"
 expect "read tools are not checked" 0 "$(claude "$A" Read "{\"file_path\":\"$B/src/x.go\"}")"
-big=$(python3 -c 'print("\\\"file_path\\\": \\\"/etc/passwd\\\" " * 2000)')
-expect "content mentioning file_path does not confuse it" 0 "$(claude "$A" Write "{\"file_path\":\"$A/notes.md\",\"content\":\"$big\"}")"
+big=$(python3 -c 'print("\"file_path\": \"/etc/passwd\" " * 2000)')
+expect "content mentioning file_path does not confuse it" 0 "$(claude "$A" Write "$(obj file_path "$A/notes.md" content "$big")")"
 
 section "locked contracts and protected paths"
 expect "worker edits a locked contract" 2 "$(claude "$A" Edit "{\"file_path\":\"$A/api/openapi.yaml\"}")"
@@ -142,17 +147,16 @@ copilot() {  # DIR TOOL ARGS_JSON
     env FC_SESSION_WORKTREE="$1" COPILOT_CLI=1 bash "$HOOK" 2>"$TEST_ROOT/guard.err"
   echo "rc=$?"
 }
-expect "copilot edit outside" 2 "$(copilot "$A" edit "{\"path\":\"$B/x\",\"old_str\":\"a\",\"new_str\":\"b\"}")"
-expect "copilot create inside" 0 "$(copilot "$A" create "{\"path\":\"$A/new.txt\",\"file_text\":\"x\"}")"
+expect "copilot edit outside" 2 "$(copilot "$A" edit "$(obj path "$B/x" old_str a new_str b)")"
+expect "copilot create inside" 0 "$(copilot "$A" create "$(obj path "$A/new.txt" file_text x)")"
 expect "copilot bash merge" 2 "$(copilot "$A" bash '{"command":"gh pr merge 3"}')"
 expect "copilot bash ok" 0 "$(copilot "$A" bash '{"command":"npm test"}')"
-expect "str_replace_editor view" 0 "$(claude "$A" str_replace_editor "{\"command\":\"view\",\"path\":\"$B/x\"}")"
+expect "str_replace_editor view" 0 "$(claude "$A" str_replace_editor "$(obj command view path "$B/x")")"
 expect "apply_patch outside" 2 "$(claude "$A" apply_patch "{\"input\":$(json_escape "*** Begin Patch
 *** Update File: $B/m.go
 @@
 *** End Patch")}")"
-# Payloads with escaped quotes are built outside "$(...)": bash 3.2 mangles
-# \" inside a command substitution that is itself in double quotes.
+# Array payloads go in variables (obj only builds strings).
 in1="{\"command\":[\"bash\",\"-lc\",\"touch $B/q\"]}"
 in2="{\"command\":[\"touch\",\"$B/q4\"]}"
 in3="{\"command\":\"touch $B/q6\"}"

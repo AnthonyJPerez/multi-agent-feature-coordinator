@@ -26,6 +26,22 @@ for s in "${runtime[@]}"; do
   if [ -z "$bad" ]; then pass "$s avoids bash 4+ features"; else fail "$s avoids bash 4+ features" "$bad"; fi
 done
 
+section "bash 3.2 brace expansion"
+# bash 3.2 brace-expands "$(f "{\"a\":1,\"b\":2}")" into one command
+# substitution per alternative; bash32-braces.py emulates its scan.
+if command -v python3 >/dev/null 2>&1; then
+  files=("${scripts[@]}" hooks/run-hook.cmd tests/lib.sh tests/run-all.sh)
+  while IFS= read -r f; do files+=("$f"); done < <(find tests -name 'test-*.sh' ! -name test-shell-lint.sh | sort)  # this file quotes examples
+  out=$(python3 -I tests/shell-lint/bash32-braces.py "${files[@]}" 2>&1)
+  if [ -z "$out" ]; then pass "no word that bash 3.2 would brace-expand (${#files[@]} files)"; else fail "no word that bash 3.2 would brace-expand" "$out"; fi
+  probe=$(printf '%s\n' 'x "$(f "$A" "{\"k\":\"v\",\"k2\":\"v2\"}")"' 'y "$(f "$(obj k v k2 v2)")"' >"$TEST_ROOT/probe.sh"
+    python3 -I tests/shell-lint/bash32-braces.py "$TEST_ROOT/probe.sh" 2>&1)
+  assert_contains "the check flags a JSON literal in a quoted command substitution" "$probe" "probe.sh:1:"
+  assert_not_contains "the check accepts a payload built by a helper" "$probe" "probe.sh:2:"
+else
+  pass "python3 not installed - skipped"
+fi
+
 section "shellcheck"
 if command -v shellcheck >/dev/null 2>&1; then
   for s in "${scripts[@]}"; do
