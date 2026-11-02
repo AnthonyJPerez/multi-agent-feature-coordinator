@@ -242,37 +242,61 @@ function unesc(s) {
   gsub(/\\u[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]/, "?", s)
   return s
 }
+# odd number of trailing backslashes: the quote after s is escaped
+function escaped(s,   c, n) {
+  n = 0
+  c = length(s)
+  while (c > 0 && substr(s, c, 1) == "\\") { n++; c-- }
+  return n % 2
+}
 BEGIN {
   RS = "\001"
-  n = split(keys, K, " ")
-  for (k = 1; k <= n; k++) want[K[k]] = 1
+  nk = split(keys, K, " ")
+  for (k = 1; k <= nk; k++) want[K[k]] = 1
 }
 { doc = doc $0 }
 END {
-  # Walk the keys in document order with constant regexes only: building a
-  # regex per key overflowed the dynamic-regex cache of older awks (macOS).
-  rest = doc
-  while (match(rest, /"[A-Za-z_][A-Za-z0-9_]*"[ \t\r\n]*:[ \t\r\n]*/)) {
-    key = substr(rest, RSTART + 1, RLENGTH)
-    key = substr(key, 1, index(key, "\"") - 1)
-    rest = substr(rest, RSTART + RLENGTH)
+  # Split on quotes - a literal split, the same in every awk - and rebuild
+  # the strings: P[2], P[4], ... start strings; an escaped quote continues
+  # one. No regex ever runs over string contents, which old awks (macOS)
+  # handled inconsistently, and the whole pass is linear.
+  np = split(doc, P, "\"")
+  pos = 1
+  for (i = 1; i <= np; i++) { O[i] = pos; pos += length(P[i]) + 1 }
+  ns = 0
+  i = 2
+  while (i <= np) {
+    j = i
+    while (j < np && escaped(P[j])) j++
+    ns++
+    SS[ns] = O[i]
+    SL[ns] = O[j] + length(P[j]) - O[i]
+    AFTER[ns] = (j + 1 <= np) ? P[j + 1] : ""
+    i = j + 2
+  }
+  for (k = 1; k < ns; k++) {
+    rest = AFTER[k]
+    if (rest !~ /^[ \t\r\n]*:/) continue
+    key = substr(doc, SS[k], SL[k])
     if (!(key in want) || (key in seen)) continue
-    if (match(rest, /^"([^"\\]|\\.)*"/)) {
-      printf "%s=%s\003", key, unesc(substr(rest, 2, RLENGTH - 2))
+    sub(/^[ \t\r\n]*:[ \t\r\n]*/, "", rest)
+    if (rest == "") {
+      printf "%s=%s\003", key, unesc(substr(doc, SS[k + 1], SL[k + 1]))
       seen[key] = 1
-    } else if (substr(rest, 1, 1) == "[") {
-      arr = substr(rest, 2)
+    } else if (rest ~ /^\[[ \t\r\n]*$/) {
       out = ""
       sep = ""
-      while (match(arr, /^[ \t\r\n]*"([^"\\]|\\.)*"[ \t\r\n]*,?/)) {
-        e = substr(arr, RSTART, RLENGTH)
-        arr = substr(arr, RLENGTH + 1)
-        e = substr(e, index(e, "\"") + 1)
-        sub(/"[ \t\r\n]*,?$/, "", e)
-        out = out sep unesc(e)
+      m = k + 1
+      while (m <= ns) {
+        out = out sep unesc(substr(doc, SS[m], SL[m]))
         sep = "\004"
+        if (AFTER[m] !~ /^[ \t\r\n]*,[ \t\r\n]*$/) break
+        m++
       }
       printf "%s[]=%s\003", key, out
+      seen[key] = 1
+    } else if (rest ~ /^\[[ \t\r\n]*\]/) {
+      printf "%s[]=\003", key
       seen[key] = 1
     }
   }
