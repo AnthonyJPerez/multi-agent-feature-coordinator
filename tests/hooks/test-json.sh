@@ -44,4 +44,26 @@ assert_eq "big payload parsed" "$B_cwd" "/w"
 assert_contains "big value intact" "$B_command" 'line "q" \\ $x'
 if [ "$took" -le 3 ]; then pass "big payload (${#big} bytes) in ${took}s"; else fail "big payload (${#big} bytes) in ${took}s (limit 3s)"; fi
 
+
+section "array shapes"
+LONG="/private/var/folders/n6/hn37q6pj7sj_9dmqqc2113800000gn/T/fc-test.X5UvQd/guard/ws/svc-b/.worktrees/G-1/q"
+GUARD_KEYS="cwd tool_name toolName toolArgs file_path notebook_path path filePath target_file input patch command cmd"
+raw() { printf '%s' "$1" | LC_ALL=C awk -v keys="$2" "$FC_JSON_AWK" 2>&1 | tr '\002\003\004' '\\|^'; }
+check_array() {  # DESC JSON KEYS EXPECTED_JOINED
+  local desc="$1" json="$2" keys="$3" want="$4" got
+  # shellcheck disable=SC2086
+  fc_json_load "$json" S_ $keys
+  got=$(printf '%s' "${S_command-<unset>}" | tr '\004' '^')
+  if [ "$got" = "$want" ] && [ "${S_command_array:-}" = 1 ]; then pass "$desc"; else fail "$desc" "got [$got] array=[${S_command_array:-}] raw: $(raw "$json" "$keys")"; fi
+}
+check_array "nested, short elements" '{"t":{"command":["a","b"]}}' "command" "a^b"
+check_array "nested, long element" "{\"t\":{\"command\":[\"bash\",\"-lc\",\"touch $LONG\"]}}" "command" "bash^-lc^touch $LONG"
+check_array "top level, long element" "{\"command\":[\"bash\",\"-lc\",\"touch $LONG\"]}" "command" "bash^-lc^touch $LONG"
+check_array "top level, short, at the end" '{"command":["a","b"]}' "command" "a^b"
+GP="{\"session_id\":\"t\",\"cwd\":\"/private/var/folders/n6/x/T/a/ws/svc-a/.worktrees/G-1\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"shell\",\"tool_input\":{\"command\":[\"bash\",\"-lc\",\"touch $LONG\"]}}"
+check_array "guard-shaped payload, one key" "$GP" "command" "bash^-lc^touch $LONG"
+check_array "guard-shaped payload, guard's keys" "$GP" "$GUARD_KEYS" "bash^-lc^touch $LONG"
+check_array "guard's keys, short payload" '{"cwd":"/w","tool_name":"shell","tool_input":{"command":["a","b"]}}' "$GUARD_KEYS" "a^b"
+printf '  awk: %s\n' "$(awk --version 2>&1 | head -n 1)"
+
 finish_tests
