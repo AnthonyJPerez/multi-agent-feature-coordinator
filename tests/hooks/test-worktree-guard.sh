@@ -25,10 +25,20 @@ fw lock G-1 >/dev/null 2>&1
 
 json_escape() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
 
+# A malformed test payload makes the guard fail open, which would let an
+# "expect 0" test pass for the wrong reason (bash 3.2 can mangle \" inside
+# "$(...)"), so the helpers refuse to send one.
+valid_json() { python3 -c 'import json,sys; json.loads(sys.argv[1])' "$1" 2>/dev/null; }
+bad_input() {
+  printf 'test bug: input is not valid JSON: %s\n' "$1" >"$TEST_ROOT/guard.err"
+  echo "rc=bad-input"
+}
+
 # claude WHO_DIR TOOL INPUT_JSON [EXTRA_ENV...]
 claude() {
   local dir="$1" tool="$2" input="$3"
   shift 3
+  valid_json "$input" || { bad_input "$input"; return; }
   printf '{"session_id":"t","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"%s","tool_input":%s}' \
     "$dir" "$tool" "$input" |
     env CLAUDE_PROJECT_DIR="$dir" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" "$@" bash "$HOOK" 2>"$TEST_ROOT/guard.err"
@@ -127,6 +137,7 @@ expect "contract-check is fine" 0 "$(bash_cmd "$A" "bash $FW_SCRIPT contract-che
 
 section "Copilot payloads"
 copilot() {  # DIR TOOL ARGS_JSON
+  valid_json "$3" || { bad_input "$3"; return; }
   printf '{"timestamp":1,"cwd":"%s","toolName":"%s","toolArgs":%s}' "$1" "$2" "$(json_escape "$3")" |
     env FC_SESSION_WORKTREE="$1" COPILOT_CLI=1 bash "$HOOK" 2>"$TEST_ROOT/guard.err"
   echo "rc=$?"
@@ -140,10 +151,15 @@ expect "apply_patch outside" 2 "$(claude "$A" apply_patch "{\"input\":$(json_esc
 *** Update File: $B/m.go
 @@
 *** End Patch")}")"
-expect "codex-style command array" 2 "$(claude "$A" shell "{\"command\":[\"bash\",\"-lc\",\"touch $B/q\"]}" FC_GUARD_DEBUG=1)"
-expect "array command, plain touch" 2 "$(claude "$A" shell "{\"command\":[\"touch\",\"$B/q4\"]}" FC_GUARD_DEBUG=1)"
-expect "array command through the Bash tool name" 2 "$(claude "$A" Bash "{\"command\":[\"touch\",\"$B/q5\"]}" FC_GUARD_DEBUG=1)"
-expect "string command through the shell tool name" 2 "$(claude "$A" shell "{\"command\":\"touch $B/q6\"}" FC_GUARD_DEBUG=1)"
+# Payloads with escaped quotes are built outside "$(...)": bash 3.2 mangles
+# \" inside a command substitution that is itself in double quotes.
+in1="{\"command\":[\"bash\",\"-lc\",\"touch $B/q\"]}"
+in2="{\"command\":[\"touch\",\"$B/q4\"]}"
+in3="{\"command\":\"touch $B/q6\"}"
+expect "codex-style command array" 2 "$(claude "$A" shell "$in1" FC_GUARD_DEBUG=1)"
+expect "array command, plain touch" 2 "$(claude "$A" shell "$in2" FC_GUARD_DEBUG=1)"
+expect "array command through the Bash tool name" 2 "$(claude "$A" Bash "$in2" FC_GUARD_DEBUG=1)"
+expect "string command through the shell tool name" 2 "$(claude "$A" shell "$in3" FC_GUARD_DEBUG=1)"
 
 section "identity and robustness"
 expect "non-feature session passes" 0 "$(claude "$TEST_ROOT" Edit "{\"file_path\":\"$B/x\"}")"

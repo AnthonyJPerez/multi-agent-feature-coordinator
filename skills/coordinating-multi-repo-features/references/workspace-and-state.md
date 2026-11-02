@@ -117,5 +117,6 @@ changes directory. Claude Code sessions also carry `CLAUDE_PROJECT_DIR`.
 |---|---|
 | `FC_GUARD=off` | Disable the worktree guard for that session |
 | `FC_GATE=off` | Disable the Stop gate for that session |
-| `FC_GATE_TIMEOUT` | Gate time limit in seconds (default 840) |
+| `FC_GATE_TIMEOUT` | Gate time limit in seconds (default 840; 25 under Copilot CLI, whose hooks time out sooner) |
 | `FC_GATE_MAX_BLOCKS` | Consecutive blocks before the gate lets a stop through (default 3) |
+| `FC_GUARD_DEBUG=1` | The guard explains each decision on stderr (troubleshooting) |

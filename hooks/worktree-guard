@@ -831,10 +831,13 @@ analyze_command() {  # CMD
 tool="${P_tool_name:-${P_toolName:-}}"
 tool=$(lower "$tool")
 dbg "tool <$tool>, identity $FC_WHO ($FC_ROLE) in $OWN, bash $BASH_VERSION"
-dbg "parsed: command=<${P_command-unset}> array=<${P_command_array-unset}> cmd=<${P_cmd-unset}>"
 if [ "${FC_GUARD_DEBUG:-0}" = 1 ]; then
-  dbg "payload (${#PAYLOAD} bytes): $PAYLOAD"
-  dbg "awk $(awk --version 2>&1 | head -n 1) says: $(printf '%s' "$PAYLOAD" | LC_ALL=C awk -v keys="cwd tool_name $ARG_KEYS" "$FC_JSON_AWK" 2>&1 | tr '\002\003\004' '\\|^')"
+  found=""
+  for k in cwd tool_name toolName toolArgs $ARG_KEYS; do
+    v="P_$k"
+    [ -n "${!v+x}" ] && found="$found $k"
+  done
+  dbg "payload ${#PAYLOAD} bytes; keys found:${found:- none}"
 fi
 [ -n "$tool" ] || exit 0
 
@@ -854,7 +857,6 @@ EOT=$(printf '\004')
 SQ_ESC="'\\''"
 json_values() {
   local var="${AP}$1" arr="${AP}$1_array" v="" e rest
-  dbg "json_values $1: $var set=<${!var+x}>"
   [ -n "${!var+x}" ] || return 0
   dbg "value $1: array=<${!arr:-}> <${!var}>"
   if [ -n "${!arr:-}" ]; then

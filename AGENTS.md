@@ -56,6 +56,10 @@ Instructions for agents (and people) changing this repository.
   `json_values`).
 - Parse JSON with `fc_json_load` (awk), not `[[ =~ ]]`: macOS's regex engine
   is pathologically slow on large payloads and differs on edge cases.
+- In tests, put a JSON payload with escaped quotes in a variable and pass
+  the variable: bash 3.2 mangles `\"` inside `"$(...)"`, most visibly
+  for arrays. A mangled payload makes the guard fail open, so a test that
+  expects exit 0 can pass for the wrong reason.
 
 ## Before you commit
 
