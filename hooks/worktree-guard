@@ -830,7 +830,8 @@ analyze_command() {  # CMD
 
 tool="${P_tool_name:-${P_toolName:-}}"
 tool=$(lower "$tool")
-dbg "tool <$tool>, identity $FC_WHO ($FC_ROLE) in $OWN"
+dbg "tool <$tool>, identity $FC_WHO ($FC_ROLE) in $OWN, bash $BASH_VERSION"
+dbg "parsed: command=<${P_command-unset}> array=<${P_command_array-unset}> cmd=<${P_cmd-unset}>"
 [ -n "$tool" ] || exit 0
 
 if [ -n "${P_toolArgs+x}" ]; then
@@ -849,6 +850,7 @@ EOT=$(printf '\004')
 SQ_ESC="'\\''"
 json_values() {
   local var="${AP}$1" arr="${AP}$1_array" v="" e rest
+  dbg "json_values $1: $var set=<${!var+x}>"
   [ -n "${!var+x}" ] || return 0
   dbg "value $1: array=<${!arr:-}> <${!var}>"
   if [ -n "${!arr:-}" ]; then
