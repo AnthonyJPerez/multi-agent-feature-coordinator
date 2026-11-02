@@ -2,9 +2,10 @@
 
 [![tests](https://github.com/AnthonyJPerez/multi-agent-feature-coordinator/actions/workflows/test.yml/badge.svg)](https://github.com/AnthonyJPerez/multi-agent-feature-coordinator/actions/workflows/test.yml)
 
-**Build one feature across many repositories with a team of coding agents.**
-One agent works in each repository, all of them in parallel on your machine,
-all building against the same locked contracts, while you approve each phase
+**Build one feature across many repositories and services with a team of
+coding agents.** Agents first research every repository in its own context;
+then one agent builds in each repository, all of them in parallel on your
+machine and against the same locked contracts, while you approve each phase
 and merge every pull request.
 
 It runs in Claude Code, GitHub Copilot CLI, Codex, Cursor and Gemini CLI. It
@@ -15,7 +16,7 @@ within one feature.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/how-it-works-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/images/how-it-works-light.svg">
-  <img alt="On your machine, a coordinator session in the anchor repo writes the plan and the locked contracts into shared files. One worker session per repository, each in its own git worktree with a guard and a stop gate, reads those files and works in parallel, and opens a draft pull request on its repository's own host as soon as it starts: GitHub, Azure DevOps Server, GitLab, or a review packet for a local repo with no remote. The coordinator marks each pull request ready when its merge step comes. You approve the spec and plan, answer the workers' questions, and merge the ready pull requests in plan order." src="docs/images/how-it-works-light.svg">
+  <img alt="On your machine, a coordinator session in the anchor repo first researches every repository, then writes the research notes, the plan and the locked contracts into shared files. One worker session per repository, each in its own git worktree with a guard and a stop gate, reads those files and works in parallel, and opens a draft pull request on its repository's own host as soon as it starts: GitHub, Azure DevOps Server, GitLab, or a review packet for a local repo with no remote. The coordinator marks each pull request ready when its merge step comes. You approve the spec and plan, answer the workers' questions, and merge the ready pull requests in plan order." src="docs/images/how-it-works-light.svg">
 </picture>
 
 ## The problem
@@ -28,22 +29,26 @@ different teams.
 
 ### What we want
 
-1. **One engineer, one feature, many repositories.** You describe the feature
-   once, and agents build it in every repository it touches, in parallel.
-2. **Each change fits its repository.** It follows that repository's own
+1. **One engineer, one feature, many repositories and services.** You
+   describe the feature once, and agents build it in every repository it
+   touches, in parallel.
+2. **Decisions rest on how each service works today.** The spec and the plan
+   come from research done inside every repository, so the design matches
+   the code, contracts and constraints that already exist.
+3. **Each change fits its repository.** It follows that repository's own
    instructions, conventions, hooks and tests, and its own code owners
    review it.
-3. **The pieces fit together.** Every repository implements the same
+4. **The pieces fit together.** Every repository implements the same
    interface, byte for byte, so the parts work once they merge.
-4. **People make the calls that matter.** The spec, the plan, contract
+5. **People make the calls that matter.** The spec, the plan, contract
    changes, approvals, merges and rollout stay with people, and agents ask
    instead of guessing.
-5. **Review converges.** Reviewers can comment early, feedback is weighed
+6. **Review converges.** Reviewers can comment early, feedback is weighed
    instead of applied blindly, and no pull request bounces between reviewer
    and agent indefinitely.
-6. **Nothing is hidden.** Every choice an agent made on its own is written
+7. **Nothing is hidden.** Every choice an agent made on its own is written
    down where reviewers see it.
-7. **It runs where the code is.** On engineers' machines, under their own
+8. **It runs where the code is.** On engineers' machines, under their own
    credentials, with repositories on any git host.
 
 ### What gets in the way
@@ -54,8 +59,8 @@ problems that stand between today's coding agents and those goals:
 - **Context rot.** A model recalls what is in its context less accurately as
   the context grows ([Anthropic, *Effective context engineering*][context]),
   and Claude Code's best practices start from the same constraint ([Claude
-  Code best practices][bp]). One session holding five repositories sees each
-  of them less clearly.
+  Code best practices][bp]). One session holding five repositories, whether
+  researching or building, sees each of them less clearly.
 - **The telephone game.** When agents hand work to each other, detail gets
   lost "with each handoff degrading fidelity" ([Anthropic, *When to fold
   subagents*][fold]). A worker that builds from someone's summary of the plan
@@ -107,14 +112,25 @@ above.
    subagents*][fold]). A repository whose interfaces are locked is that kind
    of piece. A full session, unlike a subagent, starts in its own repository,
    loads that repository's instructions and hooks, and can ask you directly.
-2. **Pass documents, not summaries.** Workers read the merged spec, the plan
-   and the locked contract files themselves; sessions talk through a mailbox
-   and a decision log on disk. Anthropic's research system has subagents
+2. **Research each repository in its own context first.** Before the spec,
+   the coordinator sends a read-only researcher into every repository, in
+   parallel. Each starts from that repository's own instructions and writes a
+   research note: where the feature lands, the interfaces the repository
+   exposes and consumes, its data, tests, owners, flags, risks and open
+   questions, each with a file and line. The coordinator joins the notes into
+   a map of the services and the seams between them; the spec and the plan
+   are written from that map, and each worker later starts from its
+   repository's note. Anthropic keeps subagents for exactly this kind of
+   work: tasks that run in parallel, each in a fresh context window that is
+   discarded when the task is done ([*When to fold subagents*][fold]).
+3. **Pass documents, not summaries.** Workers read the merged spec, the plan,
+   the locked contract files and their research note themselves; sessions
+   talk through a mailbox and a decision log on disk. Anthropic's research system has subagents
    "store their work in external systems, then pass lightweight references
    back" to avoid the telephone game ([*Multi-agent research
    system*][research]), and its context guidance keeps notes outside the
    context window ([*Effective context engineering*][context]).
-3. **Settle shared decisions before parallel work starts.** A spec pull
+4. **Settle shared decisions before parallel work starts.** A spec pull
    request, then a plan pull request with the exact contract files (OpenAPI,
    protobuf, event schemas), each repository's acceptance tests, the merge
    order and the rollout. When the plan merges, `feature-workspace lock` pins
@@ -124,27 +140,27 @@ above.
    repositories, and Cognition's first principle, share context, made
    concrete: the decisions every worker depends on are made once, in writing
    ([*Don't Build Multi-Agents*][cognition]).
-4. **Enforce the rules that must always hold.** A guard hook keeps each
+5. **Enforce the rules that must always hold.** A guard hook keeps each
    session inside its worktree and blocks force pushes, pushes to the default
    branch, merges, approvals and edits to locked contracts. A stop gate runs
    the contract check and the repository's tests before a worker may stop.
    These are hooks rather than instructions because hooks are deterministic
    ([Claude Code best practices][bp]). [What is enforced, and
    how](#what-is-enforced-and-how) shows the coverage in each harness.
-5. **Verify with evidence and fresh eyes.** Workers prove their slice with the
+6. **Verify with evidence and fresh eyes.** Workers prove their slice with the
    plan's acceptance tests, save the evidence, and have a reviewer with a
    fresh context check the diff before they report it complete. Claude Code's
    best practices call for a check the agent can run, evidence instead of
    claims, and review in a fresh context "since Claude won't be biased toward
    code it just wrote" ([Claude Code best practices][bp]).
-6. **Make review converge.** Workers sort review threads into buckets instead
+7. **Make review converge.** Workers sort review threads into buckets instead
    of applying every comment, send changes that affect other repositories
    through the coordinator, ask for re-review of the new diff only, and after
    three rounds stop to propose a different approach. These are the
    convergence rules of Anthropic's own code review, which cut the mean
    number of reviews a pull request needs to pass from 2.08 to 1.32 ([*How
    the Claude Code team does code review*][review]).
-7. **Keep people on the decisions, and make every decision visible.** Pull
+8. **Keep people on the decisions, and make every decision visible.** Pull
    requests open as drafts so people can comment while the work happens; one
    becomes ready only when its step in the merge order comes. Agents never
    merge, approve or unlock, and feature flags and rollout follow the plan.
@@ -152,9 +168,10 @@ above.
    its own, and a decision log keeps them for the whole feature. As in
    Anthropic's review process, an agent's approval never counts as a
    person's ([*How the Claude Code team does code review*][review]).
-8. **Use the simplest shape that works.** Parallel sessions only across
-   repositories, skills instead of extra agents inside each one, and bounded
-   autonomy within each phase. Anthropic's advice is to "start with the
+9. **Use the simplest shape that works.** Parallel sessions only across
+   repositories, short-lived researchers only where research splits cleanly
+   by repository, skills instead of extra agents inside each one, and
+   bounded autonomy within each phase. Anthropic's advice is to "start with the
    simplest pattern ... that could work" ([*When to fold subagents*][fold]),
    and multi-agent systems use about 15 times the tokens of a chat
    ([*Multi-agent research system*][research]), so every extra session has to
@@ -181,12 +198,13 @@ requirements they trace to are in [docs/architecture.md](docs/architecture.md).
 | Phase | What happens | Your call |
 |---|---|---|
 | 1. Start | `feature-workspace start` creates a worktree for each repository on the feature branch, plus the shared files | - |
-| 2. Spec | The coordinator writes one spec with you and opens it as a draft pull request in the anchor repository, ready once you call it complete | Approve and merge |
-| 3. Plan | The plan's pull request lists each repository's pull request with its merge step, the acceptance tests, the contract files, and the rollout: whether to use feature flags, where each starts, and their order | Approve and merge; the contracts lock |
-| 4. Build | `feature-workspace dispatch` starts one worker per repository; each opens a draft pull request on its repository's host right away and builds its part in it | Answer questions |
-| 5. Review | Reviewers comment on the drafts while the work happens; workers triage the threads and push fixes; changes that cross repositories go through the coordinator | Comment any time |
-| 6. Merge and roll out | Step by step through the merge order: the coordinator marks the step's finished pull requests ready, reviewers approve them, you merge them; then, if the plan uses feature flags, you change them in the order it sets | Every merge and every flag change |
-| 7. Finish | A docs pull request records the decisions and the test proof; `feature-workspace finish` cleans up | Merge |
+| 2. Research | A read-only researcher per repository, in parallel, writes a note on how that repository works today and where the feature lands; the coordinator joins the notes into a map of services and seams | Answer the open questions |
+| 3. Spec | The coordinator writes one spec with you and opens it as a draft pull request in the anchor repository, ready once you call it complete | Approve and merge |
+| 4. Plan | The plan's pull request lists each repository's pull request with its merge step, the acceptance tests, the contract files, and the rollout: whether to use feature flags, where each starts, and their order | Approve and merge; the contracts lock |
+| 5. Build | `feature-workspace dispatch` starts one worker per repository; each opens a draft pull request on its repository's host right away and builds its part in it | Answer questions |
+| 6. Review | Reviewers comment on the drafts while the work happens; workers triage the threads and push fixes; changes that cross repositories go through the coordinator | Comment any time |
+| 7. Merge and roll out | Step by step through the merge order: the coordinator marks the step's finished pull requests ready, reviewers approve them, you merge them; then, if the plan uses feature flags, you change them in the order it sets | Every merge and every flag change |
+| 8. Finish | A docs pull request records the decisions and the test proof; `feature-workspace finish` cleans up | Merge |
 
 Inside a phase the agents work on their own, within the limits you set; the
 phase ends when you make the call.
@@ -195,9 +213,9 @@ phase ends when you make the call.
 
 Use feature-coordinator when:
 
-- one feature needs coordinated changes in **two or more repositories**,
-  especially when they share an interface: an API, events, a schema or an
-  SDK;
+- one feature needs coordinated changes in **two or more repositories or
+  services**, especially when they share an interface: an API, events, a
+  schema or an SDK;
 - the repositories live on **different git hosts**, or some have no remote
   at all;
 - the agents need to run **on engineers' machines**, under their own

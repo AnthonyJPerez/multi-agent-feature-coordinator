@@ -18,6 +18,8 @@ repository.
       contracts.lock            locked contract files (after `lock`)
       unlocked.tsv              human-approved exceptions to the lock
       decisions.md              decision log (Tier 2 and 3)
+      research/<repo>.md        per-repository research notes (before the spec)
+      research/context-map.md   services, how they talk, the seams the feature touches
       briefs/worker-<repo>.md   worker briefs (written by `dispatch`)
       briefs/brief-<date>.md    briefs for your human partner
       mail/<who>/*.md           unread messages; read ones move to read/

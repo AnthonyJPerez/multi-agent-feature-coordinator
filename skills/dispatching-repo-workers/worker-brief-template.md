@@ -11,6 +11,8 @@ feature {{FEATURE_ID}} and nothing else.
   - `{{FEATURE_DOCS}}/spec.md` - what the feature must do
   - `{{FEATURE_DOCS}}/plan.md` - your section, acceptance tests, rollout order
   - `{{FEATURE_DOCS}}/contracts/{{REPO}}/` - this repo's locked contract files
+  - `{{STATE}}/research/{{REPO}}.md` - the research note on this repo, written
+    before the spec: a starting map; check it against the code
 - Contract lock: `{{LOCK_COMMIT}}`
 - Locked contract files in this repo:
 {{CONTRACTS}}
