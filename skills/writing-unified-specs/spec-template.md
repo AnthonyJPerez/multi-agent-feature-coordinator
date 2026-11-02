@@ -42,8 +42,9 @@ schemas go in the plan.
 
 ## Rollout
 
-Feature flags, who sees it first, how it is turned off, compatibility with
-older clients during rollout.
+Who sees it first, how it can be turned off or rolled back, compatibility
+with older clients during rollout. Whether to use feature flags, and where
+each one starts, is decided in the plan.
 
 ## Failure Modes
 

@@ -35,7 +35,8 @@ the spec with you."
 - Cover, in roughly this order: the problem and who has it, what success
   looks like, what is out of scope, the behavior in each scenario, which
   services are involved and how they talk, what data or contracts change
-  (conceptually - exact schemas come in the plan), rollout and flags,
+  (conceptually - exact schemas come in the plan), rollout needs (the plan
+  decides whether to use feature flags),
   failure modes, security and privacy, migration of existing data.
 - Say what you would choose and why, then let your human partner decide.
 - Stop when every section of the template has an answer or an explicit open

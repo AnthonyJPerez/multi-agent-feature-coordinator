@@ -52,8 +52,12 @@ Copy `plan-template.md` (this skill's folder) to
 4. **Compatibility rule** - expand, then contract: add new fields and
    endpoints first, migrate callers, remove old ones in a later PR. No PR may
    break a caller that merges after it.
-5. **Flags and rollout order** - flag names, default off, the order flags
-   turn on, and how to turn each one off.
+5. **Feature flags and rollout** - whether the feature uses feature flags at
+   all, and why. If it does: each flag's name, whether it starts on or off
+   and why, the order to change them, and how to roll each one back. If it
+   does not: the merge steps are the rollout, so say what each step changes
+   for users and how to revert it. Your human partner decides; this is
+   where the decision is recorded.
 6. **Decisions** - the cross-repo decisions made so far and why
    (recording-decisions).
 

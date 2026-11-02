@@ -10,6 +10,10 @@
   (on Azure DevOps: publishes them), one step at a time, and returns a PR
   that needs a large change to draft. Workers still mark their own stacked
   sub-PRs ready.
+- Feature flags are a plan decision: the plan says whether the feature uses
+  them and whether each one starts on or off, or how the merge steps roll
+  it out without flags. Merging and rollout follow that instead of assuming
+  flags that start off.
 - Provider references cover both directions of H7, ready and back to draft,
   for GitHub, Azure DevOps, GitLab, Bitbucket, Gerrit, Gitea and review
   packets, plus how each host treats drafts.

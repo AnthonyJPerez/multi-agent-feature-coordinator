@@ -61,8 +61,8 @@ macOS default), so the same files run on macOS, Linux and Git for Windows.
 | Code wave | one draft PR per repo, opened as soon as its contracts are applied | comments on the drafts at any time |
 | Review | triaged threads, sub-PRs | approvals per commit, once a PR is ready |
 | Ready | the coordinator marks the current merge step's complete PRs ready | - |
-| Merge | plan order, step by step, flags off | engineer merges each |
-| Rollout | flags in plan order | engineer flips each |
+| Merge | plan order, step by step; any flags where the plan says they start | engineer merges each |
+| Rollout | flag changes in plan order, if the plan uses flags; otherwise the merges | engineer makes each change |
 | Finish | docs PR (decisions, proof index), cleanup | merge |
 
 Inside a phase the agents run autonomously within the budget the engineer
@@ -136,9 +136,9 @@ and Mercurial repos can join through git bridges.
 ## Requirements traceability
 
 R1-R25 are the requirements extracted from the original design discussion;
-R26-R28 are later steers: technologies must be configurable, the plugin runs
-locally across repos on any mix of git hosts, and PRs stay drafts until
-their turn in the merge order.
+R26-R29 are later steers: technologies must be configurable, the plugin runs
+locally across repos on any mix of git hosts, PRs stay drafts until their
+turn in the merge order, and the plan decides whether to use feature flags.
 
 | R | Requirement (short) | Satisfied by | Enforcement |
 |---|---|---|---|
@@ -166,6 +166,7 @@ their turn in the merge order.
 | R26 | Configurable tracker, code host, chat, conventions | `.feature-coordinator.conf`, provider references | Config + script |
 | R27 | Local-first, with repos on any mix of git hosts, including custom servers and local-only repos | Per-repo code host (detection + `code_host.<repo>`), references for GitHub, Azure DevOps (Services/Server), GitLab, Bitbucket, Gerrit, Gitea, and a review-packet flow for repos without pull requests | Config + script; guard rules per host |
 | R28 | PRs open as drafts so people can comment early and agents answer; only the PRs next in the merge order are ready (active) | Draft PR at the first push (H1), comment triage on drafts, coordinator marks the current merge step ready (H7) and returns reworked PRs to draft; draft state in `fw status` | Skills + host draft semantics; status in script |
+| R29 | Whether to use feature flags, and whether each starts on or off, is decided in the implementation plan | Plan's "Feature Flags and Rollout" section (yes/no, starting state, order, rollback; or a rollout by merge step); finishing follows it | Skills + plan template |
 
 ## Parity
 
