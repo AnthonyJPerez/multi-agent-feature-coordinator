@@ -1,0 +1,20 @@
+{
+  "name": "feature-coordinator",
+  "interface": {
+    "displayName": "Feature Coordinator"
+  },
+  "plugins": [
+    {
+      "name": "feature-coordinator",
+      "source": {
+        "source": "url",
+        "url": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

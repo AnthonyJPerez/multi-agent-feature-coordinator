@@ -1,0 +1,16 @@
+# Hook scripts and the polyglot wrapper must keep LF endings on every OS:
+# run-hook.cmd is parsed by both cmd.exe and bash.
+*.sh text eol=lf
+*.cmd text eol=lf
+hooks/session-start text eol=lf
+hooks/worktree-guard text eol=lf
+hooks/feature-gate text eol=lf
+skills/coordinating-multi-repo-features/scripts/feature-workspace text eol=lf
+skills/coordinating-multi-repo-features/scripts/fc-lib text eol=lf
+*.conf text eol=lf
+
+*.md text eol=lf
+*.json text eol=lf
+
+*.png binary
+*.jpg binary

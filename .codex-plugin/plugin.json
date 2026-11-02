@@ -1,0 +1,39 @@
+{
+  "name": "feature-coordinator",
+  "version": "0.1.0",
+  "description": "Run one feature across many repositories: a coordinator session plus one worker session per repo worktree, locked contracts, triaged reviews and visible decisions.",
+  "author": {
+    "name": "AJ Perez",
+    "url": "https://github.com/AnthonyJPerez"
+  },
+  "homepage": "https://github.com/AnthonyJPerez/multi-agent-feature-coordinator",
+  "repository": "https://github.com/AnthonyJPerez/multi-agent-feature-coordinator",
+  "license": "MIT",
+  "keywords": [
+    "multi-repo",
+    "microservices",
+    "worktrees",
+    "contracts",
+    "code-review"
+  ],
+  "skills": "./skills/",
+  "hooks": {},
+  "interface": {
+    "displayName": "Feature Coordinator",
+    "shortDescription": "Coordinate one feature across many repositories",
+    "longDescription": "Plan a cross-repo feature as one spec and one contract-locking plan, run one session per repository worktree, triage review feedback without blind fixes, and keep every autonomous decision visible.",
+    "developerName": "AJ Perez",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Start a feature that spans several of our repositories.",
+      "Give me a brief on the feature I'm coordinating."
+    ],
+    "websiteURL": "https://github.com/AnthonyJPerez/multi-agent-feature-coordinator",
+    "logo": "./assets/icon.png"
+  }
+}

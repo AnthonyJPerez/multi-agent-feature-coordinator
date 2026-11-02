@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# SessionStart hook for feature-coordinator.
+#
+# Injects the using-feature-coordinator bootstrap skill and, when the session
+# starts inside a feature worktree, who this session is, where its documents
+# are and which team stack (tracker, code host, chat) it works with.
+#
+# Never fails the session: any problem degrades to less context, exit 0.
+# Prints with printf, never a heredoc (bash 5.3 heredoc hang in hooks).
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SKILLS="${PLUGIN_ROOT}/skills"
+LIB="${SKILLS}/coordinating-multi-repo-features/scripts/fc-lib"
+PROVIDERS="${SKILLS}/using-feature-coordinator/references/providers"
+
+escape_for_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+bootstrap=$(cat "${SKILLS}/using-feature-coordinator/SKILL.md" 2>/dev/null ||
+  printf 'Error reading the using-feature-coordinator skill.')
+
+feature_context=""
+# shellcheck source=../skills/coordinating-multi-repo-features/scripts/fc-lib
+if [ -r "$LIB" ] && . "$LIB" 2>/dev/null; then
+  dir="${FC_SESSION_WORKTREE:-${CLAUDE_PROJECT_DIR:-$PWD}}"
+  if fc_feature_context "$dir" 2>/dev/null; then
+    anchor_wt=$(fc_repo_field "$FC_STATE" coordinator "$FC_COL_WT" 2>/dev/null || true)
+    FC_CFG_TRACKER=none FC_CFG_CHAT=none FC_CFG_DOCS_DIR="$FC_DOCS_DIR_DEFAULT"
+    fc_read_env "$FC_STATE/config.env" 2>/dev/null || true
+    host=$(fc_repo_field "$FC_STATE" "$FC_WHO" "$FC_COL_HOST" 2>/dev/null || true)
+    [ -n "$host" ] || host=unknown
+    lock="none yet - contracts are not locked"
+    if [ -r "$FC_STATE/contracts.lock" ]; then
+      lock=$(sed -n 's/^# commit=//p' "$FC_STATE/contracts.lock" | head -n 1)
+      lock="${lock:0:12}"
+    fi
+    unread=$(find "$FC_STATE/mail/$FC_WHO" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+    nl=$'\n'
+    if [ "$FC_ROLE" = anchor ]; then
+      role="the COORDINATOR session for feature ${FC_ID} (anchor repo ${FC_REPO})"
+      next="Use the coordinating-multi-repo-features skill. Other repos' worktrees are read-only for you."
+    else
+      role="the WORKER session for ${FC_REPO} in feature ${FC_ID}"
+      next="Use the working-a-repo-slice skill. Read your brief first: ${FC_STATE}/briefs/worker-${FC_WHO}.md"
+    fi
+    refs=""
+    for pair in "tracker:${FC_CFG_TRACKER}" "host:${host}" "chat:${FC_CFG_CHAT}"; do
+      f=$(fc_provider_ref "${pair%%:*}" "${pair#*:}")
+      [ -n "$f" ] && refs="${refs}${nl}  - ${pair#*:}: ${PROVIDERS}/${f}"
+    done
+    [ -n "$refs" ] || refs="${nl}  - none configured"
+    feature_context="## This session is inside a feature worktree${nl}${nl}"
+    feature_context="${feature_context}You are ${role}.${nl}"
+    feature_context="${feature_context}- Worktree (edit only here): ${FC_TOPLEVEL}${nl}"
+    feature_context="${feature_context}- Feature documents: ${anchor_wt}/${FC_CFG_DOCS_DIR}/${FC_ID}/ (spec.md, plan.md, contracts/)${nl}"
+    feature_context="${feature_context}- Contract lock: ${lock}${nl}"
+    feature_context="${feature_context}- Unread messages: ${unread} (bash ${FC_SCRIPT} mail ${FC_ID} inbox --for ${FC_WHO})${nl}"
+    feature_context="${feature_context}- Workspace script: bash ${FC_SCRIPT}${nl}"
+    feature_context="${feature_context}- Team stack: tracker ${FC_CFG_TRACKER}, code host ${host}, chat ${FC_CFG_CHAT}. Provider references:${refs}${nl}${nl}"
+    feature_context="${feature_context}${next}"
+  fi
+fi
+
+bootstrap_escaped=$(escape_for_json "$bootstrap")
+context="<EXTREMELY_IMPORTANT>\nYou have feature-coordinator skills.\n\n**Below is the full content of your 'feature-coordinator:using-feature-coordinator' skill - your introduction to the multi-repo feature skills. It is already loaded; do not load it again. For every other skill, use your skill tool:**\n\n${bootstrap_escaped}\n</EXTREMELY_IMPORTANT>"
+if [ -n "$feature_context" ]; then
+  context="${context}\n\n<feature-context>\n$(escape_for_json "$feature_context")\n</feature-context>"
+fi
+
+# Emit exactly one field: Claude Code reads both additional_context and
+# hookSpecificOutput without de-duplicating.
+if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+  printf '{\n  "additional_context": "%s"\n}\n' "$context"
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
+  printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "$context"
+else
+  printf '{\n  "additionalContext": "%s"\n}\n' "$context"
+fi
+
+exit 0

@@ -1,0 +1,1238 @@
+#!/usr/bin/env bash
+# feature-workspace - correlated worktrees, contract locks, mailbox, decision
+# log and status for one feature that spans several repositories.
+#
+# Always invoke it through bash; some plugin packagers strip executable bits:
+#   bash <path-to-this-skill>/scripts/feature-workspace help
+set -euo pipefail
+
+case "${BASH_SOURCE[0]}" in
+  */*) FC_SELF_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd -P)" ;;
+  *) FC_SELF_DIR="$(pwd -P)" ;;
+esac
+FC_SKILLS_DIR="$(cd "$FC_SELF_DIR/../.." && pwd -P)"
+FC_PROVIDER_DIR="$FC_SKILLS_DIR/using-feature-coordinator/references/providers"
+# shellcheck source=fc-lib
+. "$FC_SELF_DIR/fc-lib"
+
+FC_THIS="$FC_SELF_DIR/feature-workspace"
+WS_OPT=""
+
+usage() {
+  cat <<'EOF'
+feature-workspace - run one feature across several repositories.
+
+Usage: bash feature-workspace <command> [args] [--workspace DIR]
+
+Setup
+  start ID --anchor REPO [--repo REPO]... [--base REF] [--gate REPO=CMD]...
+             [--no-fetch]
+      Create a worktree in every repo (anchor on <prefix>ID-spec, workers on
+      <prefix>ID) and the shared state in <workspace>/.feature/ID. Re-running
+      it adds repos. REPO is a directory name under the workspace or a path.
+  config [ID] [--anchor REPO] [--refresh]
+      Show the team stack (tracker, code host, chat, conventions), where each
+      value came from, and the provider reference files to read.
+  launch ID TARGET... [--cli claude|copilot|codex] [--tmux] [--extra ARGS]
+      Print (or, with --tmux, start) the command that opens a session.
+      TARGET is "coordinator", "workers" or a repo name.
+  dispatch ID [--cli ...] [--tmux] [--extra ARGS] [--allow-unlocked]
+      Write each worker's brief, then launch the worker sessions.
+
+Contracts
+  lock ID [--ref REF] [--no-fetch]
+      Lock the contract copies under <docs_dir>/ID/contracts/<repo>/ as
+      merged in the anchor repo (default ref: origin/<default branch>).
+  apply-contract ID [--repo REPO]
+      Write this repo's locked contract files into its worktree.
+  contract-check ID [--repo REPO] [--quiet]
+      Exit 1 when a locked contract file differs from the lock.
+  unlock ID --repo REPO --path PATH --reason TEXT
+      Your human partner's decision to let one locked file change.
+
+Coordination
+  mail ID send --from WHO --to WHO --subject TEXT [--body TEXT|--body-file F]
+  mail ID inbox --for WHO [--keep]
+      WHO is "coordinator" or a repo name. Without --body, reads stdin.
+  log-decision ID --who WHO --tier 1|2|3 --decision TEXT --why TEXT
+             [--alternatives TEXT] [--pr URL]
+  status ID [--no-remote]   Worktrees, branches, contract lock, PRs, mail.
+  where [--dir DIR]         Feature, role, team stack and paths for a directory.
+  list                      Features in this workspace.
+
+Finish
+  finish ID [--force] [--keep-branches] [--keep-state]
+      Remove worktrees and branches once every branch is merged.
+
+Team stack: commit .feature-coordinator.conf in the anchor repo (see the
+using-feature-coordinator skill's references/providers/README.md).
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+need_arg() { [ "$#" -ge 2 ] && [ -n "$2" ] || fc_die "$1 needs a value"; }
+
+valid_id() {
+  local re='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+  [[ $1 =~ $re ]] || fc_die "invalid feature ID '$1' (use letters, digits, . _ -)"
+  case "$1" in *..*) fc_die "invalid feature ID '$1'" ;; esac
+}
+
+now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# state_dir ID - locate <workspace>/.feature/ID
+state_dir() {
+  local id="$1" d
+  if [ -n "$WS_OPT" ]; then
+    printf '%s/.feature/%s\n' "$(fc_canon "$WS_OPT")" "$id"
+    return
+  fi
+  if fc_feature_context "$PWD" && [ "$FC_ID" = "$id" ]; then
+    printf '%s\n' "$FC_STATE"
+    return
+  fi
+  if [ -n "${FC_WORKSPACE:-}" ]; then
+    printf '%s/.feature/%s\n' "$(fc_canon "$FC_WORKSPACE")" "$id"
+    return
+  fi
+  d=$(pwd -P)
+  while :; do
+    if [ -f "$d/.feature/$id/feature.env" ]; then
+      printf '%s/.feature/%s\n' "$d" "$id"
+      return
+    fi
+    [ "$d" = "/" ] && break
+    d="${d%/*}"
+    [ -n "$d" ] || d="/"
+  done
+  fc_die "cannot find .feature/$id; pass --workspace DIR"
+}
+
+require_state() {
+  [ -f "$1/feature.env" ] || fc_die "no feature state at $1 (run start first)"
+}
+
+field() { fc_repo_field "$1" "$2" "$3"; }
+
+has_who() {
+  [ -n "$(field "$1" "$2" "$FC_COL_WHO")" ]
+}
+
+# load_config STATE - FC_CFG_* from the feature's config snapshot
+load_config() {
+  FC_CFG_TRACKER=none FC_CFG_TRACKER_URL="" FC_CFG_TRACKER_PROJECT=""
+  FC_CFG_CODE_HOST=auto FC_CFG_CHAT=none FC_CFG_CHAT_CHANNEL="" FC_CFG_CHAT_WEBHOOK_ENV=""
+  FC_CFG_BRANCH_PREFIX=feat/ FC_CFG_DOCS_DIR="$FC_DOCS_DIR_DEFAULT" FC_CFG_DEFAULT_CLI=claude
+  FC_CFG_COORDINATOR_MODEL=opus FC_CFG_WORKER_MODEL=sonnet FC_CFG_EFFORT=high FC_CFG_PROTECTED_PATHS=""
+  [ -f "$1/config.env" ] && fc_read_env "$1/config.env"
+  return 0
+}
+
+cfg_var() {
+  case "$1" in
+    tracker) echo FC_CFG_TRACKER ;;
+    tracker.url) echo FC_CFG_TRACKER_URL ;;
+    tracker.project) echo FC_CFG_TRACKER_PROJECT ;;
+    code_host) echo FC_CFG_CODE_HOST ;;
+    chat) echo FC_CFG_CHAT ;;
+    chat.channel) echo FC_CFG_CHAT_CHANNEL ;;
+    chat.webhook_env) echo FC_CFG_CHAT_WEBHOOK_ENV ;;
+    branch_prefix) echo FC_CFG_BRANCH_PREFIX ;;
+    docs_dir) echo FC_CFG_DOCS_DIR ;;
+    default_cli) echo FC_CFG_DEFAULT_CLI ;;
+    coordinator_model) echo FC_CFG_COORDINATOR_MODEL ;;
+    worker_model) echo FC_CFG_WORKER_MODEL ;;
+    effort) echo FC_CFG_EFFORT ;;
+    protected_paths) echo FC_CFG_PROTECTED_PATHS ;;
+  esac
+}
+
+# resolve_config WS ANCHOR_MAIN - set FC_CFG_* and FC_SRC_* from the sources
+resolve_config() {
+  local ws="$1" anchor="$2" key line val src var
+  for key in $FC_CONF_KEYS; do
+    line=$(fc_conf_resolve "$key" "$ws" "$anchor")
+    val="${line%%$'\t'*}"
+    src="${line#*$'\t'}"
+    fc_conf_validate "$key" "$val" || fc_die "invalid $key '$val' (from $src)"
+    var=$(cfg_var "$key")
+    printf -v "$var" '%s' "$val"
+    printf -v "FC_SRC_${var#FC_CFG_}" '%s' "$src"
+  done
+}
+
+write_config_snapshot() {
+  local state="$1" args=() key var
+  for key in $FC_CONF_KEYS; do
+    var=$(cfg_var "$key")
+    args[${#args[@]}]="$var=${!var}"
+  done
+  fc_write_env "$state/config.env" "${args[@]}"
+}
+
+# repo_gate WS ANCHOR_MAIN REPO_MAIN NAME - default gate command for a repo
+repo_gate() {
+  local ws="$1" anchor="$2" main="$3" name="$4" v
+  v=$(fc_conf_get "$ws/.feature/config" "gate.$name" 2>/dev/null) && { printf '%s\n' "$v"; return; }
+  v=$(fc_conf_get "$anchor/$FC_CONF_FILE" "gate.$name" 2>/dev/null) && { printf '%s\n' "$v"; return; }
+  v=$(fc_conf_get "$main/$FC_CONF_FILE" gate 2>/dev/null) && { printf '%s\n' "$v"; return; }
+  return 0
+}
+
+# resolve_repo NAME_OR_PATH WORKSPACE -> canonical repo root
+resolve_repo() {
+  local spec="$1" ws="$2" p top
+  case "$spec" in
+    */* | .) p=$(fc_canon "$spec") ;;
+    *) p=$(fc_canon "$ws/$spec") ;;
+  esac
+  [ -d "$p" ] || fc_die "repository not found: $p"
+  top=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || fc_die "not a git repository: $p"
+  top=$(fc_canon "$top")
+  [ "$top" = "$p" ] || fc_die "$p is inside $top; pass the repository root"
+  case "$p" in
+    */.worktrees/*) fc_die "$p is a feature worktree; pass the main checkout" ;;
+  esac
+  printf '%s\n' "$p"
+}
+
+# upsert_row STATE WHO ROW - replace WHO's row in repos.tsv
+upsert_row() {
+  local state="$1" who="$2" row="$3" tmp
+  tmp="$state/repos.tsv.tmp.$$"
+  if [ -f "$state/repos.tsv" ]; then
+    awk -F '\t' -v w="$who" '$1 != w' "$state/repos.tsv" >"$tmp"
+  else
+    : >"$tmp"
+  fi
+  if [ "$who" = "coordinator" ]; then
+    { printf '%s\n' "$row"; cat "$tmp"; } >"$tmp.2"
+    mv "$tmp.2" "$tmp"
+  else
+    printf '%s\n' "$row" >>"$tmp"
+  fi
+  mv "$tmp" "$state/repos.tsv"
+}
+
+ensure_excluded() {
+  local common="$1" pattern="$2" info="$1/info/exclude"
+  mkdir -p "$common/info"
+  touch "$info"
+  grep -qxF "$pattern" "$info" 2>/dev/null || printf '%s\n' "$pattern" >>"$info"
+}
+
+copy_worktreeinclude() {
+  local main="$1" wt="$2" f
+  [ -f "$main/.worktreeinclude" ] || return 0
+  git -C "$main" ls-files --others --ignored \
+    --exclude-from="$main/.worktreeinclude" -z 2>/dev/null |
+    while IFS= read -r -d '' f; do
+      case "$f" in .worktrees/* | .claude/worktrees/*) continue ;; esac
+      [ -e "$wt/$f" ] && continue
+      mkdir -p "$(dirname "$wt/$f")"
+      cp -p "$main/$f" "$wt/$f"
+    done
+}
+
+# setup_worktree MAIN WTNAME BRANCH BASE FETCH -> prints worktree path
+setup_worktree() {
+  local main="$1" wtname="$2" branch="$3" base="$4" fetch="$5"
+  local common wt default existing
+  common=$(fc_canon "$(git -C "$main" rev-parse --git-common-dir)" "$main")
+  if [ "$fetch" = 1 ] && git -C "$main" remote get-url origin >/dev/null 2>&1; then
+    git -C "$main" fetch --quiet origin 2>/dev/null || fc_warn "fetch failed in $main; using local refs"
+  fi
+  if [ -z "$base" ]; then
+    default=$(fc_default_branch "$main")
+    if git -C "$main" rev-parse --verify --quiet "refs/remotes/origin/$default^{commit}" >/dev/null; then
+      base="origin/$default"
+    else
+      base="$default"
+    fi
+  fi
+  ensure_excluded "$common" ".worktrees/"
+  wt="$main/.worktrees/$wtname"
+  if [ -e "$wt" ]; then
+    existing=$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null) ||
+      fc_die "$wt exists but is not a git worktree"
+    [ "$(fc_canon "$existing" "$wt")" = "$common" ] ||
+      fc_die "$wt belongs to another repository"
+  elif git -C "$main" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$main" worktree add --quiet "$wt" "$branch" >&2
+  elif git -C "$main" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    git -C "$main" worktree add --quiet --track -b "$branch" "$wt" "origin/$branch" >&2
+  else
+    git -C "$main" rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
+      fc_die "base ref '$base' not found in $main"
+    git -C "$main" worktree add --quiet --no-track -b "$branch" "$wt" "$base" >&2
+  fi
+  copy_worktreeinclude "$main" "$wt"
+  fc_canon "$wt"
+}
+
+write_record() {
+  local main="$1" wtname="$2" id="$3" who="$4" repo="$5" role="$6" state="$7" wt="$8" branch="$9"
+  local common
+  common=$(fc_canon "$(git -C "$main" rev-parse --git-common-dir)" "$main")
+  mkdir -p "$common/feature-coordinator"
+  fc_write_env "$common/feature-coordinator/$wtname.env" \
+    "FC_ID=$id" "FC_WHO=$who" "FC_REPO=$repo" "FC_ROLE=$role" \
+    "FC_STATE=$state" "FC_WORKTREE=$wt" "FC_BRANCH=$branch"
+}
+
+# provider_refs STATE -> lines "kind: value -> path" for the team stack
+provider_refs() {
+  local state="$1" f h seen=""
+  load_config "$state"
+  f=$(fc_provider_ref tracker "$FC_CFG_TRACKER")
+  if [ -n "$f" ]; then
+    printf 'tracker %s: %s\n' "$FC_CFG_TRACKER" "$FC_PROVIDER_DIR/$f"
+  else
+    printf 'tracker none: no tracker configured\n'
+  fi
+  for h in $(awk -F '\t' '{ print $8 }' "$state/repos.tsv" 2>/dev/null | sort -u); do
+    case " $seen " in *" $h "*) continue ;; esac
+    seen="$seen $h"
+    f=$(fc_provider_ref host "$h")
+    if [ -n "$f" ]; then
+      printf 'code host %s: %s\n' "$h" "$FC_PROVIDER_DIR/$f"
+    else
+      printf 'code host %s: no provider reference; set code_host in the config\n' "$h"
+    fi
+  done
+  f=$(fc_provider_ref chat "$FC_CFG_CHAT")
+  if [ -n "$f" ]; then
+    printf 'chat %s: %s\n' "$FC_CFG_CHAT" "$FC_PROVIDER_DIR/$f"
+  else
+    printf 'chat none: no team channel configured\n'
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# start / config
+# ---------------------------------------------------------------------------
+
+cmd_start() {
+  local id="" anchor="" base="" fetch=1 ws state
+  local repos=() gates=() r g main anchor_main wt name gate who wtname anchor_name host bp
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --anchor) need_arg "$@"; anchor="$2"; shift 2 ;;
+      --repo) need_arg "$@"; repos[${#repos[@]}]="$2"; shift 2 ;;
+      --base) need_arg "$@"; base="$2"; shift 2 ;;
+      --gate) need_arg "$@"; gates[${#gates[@]}]="$2"; shift 2 ;;
+      --no-fetch) fetch=0; shift ;;
+      -*) fc_die "start: unknown option $1" ;;
+      *) [ -z "$id" ] || fc_die "start: unexpected argument $1"; id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] || fc_die "start: missing feature ID"
+  valid_id "$id"
+  [ -n "$anchor" ] || fc_die "start: --anchor REPO is required"
+  if [ -n "$WS_OPT" ]; then
+    ws=$(fc_canon "$WS_OPT")
+  else
+    case "$anchor" in
+      */*) ws=$(dirname "$(fc_canon "$anchor")") ;;
+      *) ws=$(pwd -P) ;;
+    esac
+  fi
+  [ -d "$ws" ] || fc_die "workspace not found: $ws"
+  anchor_main=$(resolve_repo "$anchor" "$ws")
+  anchor_name=$(basename "$anchor_main")
+  state="$ws/.feature/$id"
+
+  if [ -f "$state/feature.env" ]; then
+    FC_ANCHOR=""
+    fc_read_env "$state/feature.env"
+    [ "$FC_ANCHOR" = "$anchor_name" ] || fc_die "feature $id already uses anchor $FC_ANCHOR"
+  fi
+  mkdir -p "$state/mail/coordinator" "$state/briefs" "$state/gates" "$state/proof"
+  if [ -f "$state/config.env" ]; then
+    load_config "$state"
+  else
+    resolve_config "$ws" "$anchor_main"
+    write_config_snapshot "$state"
+  fi
+  bp="$FC_CFG_BRANCH_PREFIX"
+
+  # The anchor (coordinator) worktree starts on <prefix>ID-spec.
+  wt=$(setup_worktree "$anchor_main" "$id" "$bp$id-spec" "$base" "$fetch")
+  host="$FC_CFG_CODE_HOST"
+  [ "$host" = auto ] && host=$(fc_detect_host "$anchor_main")
+  write_record "$anchor_main" "$id" "$id" coordinator "$anchor_name" anchor "$state" "$wt" "$bp$id-spec"
+  upsert_row "$state" coordinator \
+    "$(printf 'coordinator\t%s\tanchor\t%s\t%s\t%s\t\t%s' "$anchor_name" "$anchor_main" "$wt" "$bp$id-spec" "$host")"
+
+  for r in ${repos[@]+"${repos[@]}"}; do
+    main=$(resolve_repo "$r" "$ws")
+    name=$(basename "$main")
+    gate=""
+    for g in ${gates[@]+"${gates[@]}"}; do
+      case "$g" in "$name="*) gate="${g#*=}" ;; esac
+    done
+    [ -n "$gate" ] || gate=$(field "$state" "$name" "$FC_COL_GATE" 2>/dev/null || true)
+    [ -n "$gate" ] || gate=$(repo_gate "$ws" "$anchor_main" "$main" "$name")
+    case "$gate" in *$'\t'* | *$'\n'*) fc_die "gate command for $name may not contain tabs or newlines" ;; esac
+    host="$FC_CFG_CODE_HOST"
+    [ "$host" = auto ] && host=$(fc_detect_host "$main")
+    who="$name"
+    wtname="$id"
+    [ "$name" = "$anchor_name" ] && wtname="$id-code"
+    wt=$(setup_worktree "$main" "$wtname" "$bp$id" "$base" "$fetch")
+    write_record "$main" "$wtname" "$id" "$who" "$name" worker "$state" "$wt" "$bp$id"
+    upsert_row "$state" "$who" "$(printf '%s\t%s\tworker\t%s\t%s\t%s\t%s\t%s' "$who" "$name" "$main" "$wt" "$bp$id" "$gate" "$host")"
+    mkdir -p "$state/mail/$who"
+  done
+
+  if [ ! -f "$state/feature.env" ]; then
+    fc_write_env "$state/feature.env" "FC_ID=$id" "FC_WORKSPACE=$ws" \
+      "FC_ANCHOR=$anchor_name" "FC_CREATED=$(now_utc)"
+  fi
+  [ -f "$state/decisions.md" ] || printf '# Decision log for %s\n\n' "$id" >"$state/decisions.md"
+
+  printf 'Feature %s is ready in %s\n\n' "$id" "$ws"
+  print_table "$state"
+  printf '\nTeam stack (read these provider references):\n'
+  provider_refs "$state" | sed 's/^/  /'
+  printf '\nState: %s\n' "$state"
+  printf 'Next: open the coordinator session -\n  bash %s launch %s coordinator --workspace %s\n' \
+    "$FC_THIS" "$id" "$ws"
+}
+
+print_table() {
+  local state="$1"
+  printf '| Who | Role | Worktree | Branch | Code host | Gate |\n|---|---|---|---|---|---|\n'
+  awk -F '\t' '{ g = ($7 == "" ? "-" : $7); printf "| %s | %s | %s | %s | %s | `%s` |\n", $1, $3, $5, $6, $8, g }' \
+    "$state/repos.tsv"
+}
+
+cmd_config() {
+  local id="" anchor="" refresh=0 state ws key var src keep_bp keep_docs
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --anchor) need_arg "$@"; anchor="$2"; shift 2 ;;
+      --refresh) refresh=1; shift ;;
+      -*) fc_die "config: unknown option $1" ;;
+      *) [ -z "$id" ] || fc_die "config: unexpected argument $1"; id="$1"; shift ;;
+    esac
+  done
+  if [ -n "$id" ]; then
+    state=$(state_dir "$id")
+    require_state "$state"
+    FC_WORKSPACE="" FC_ANCHOR=""
+    fc_read_env "$state/feature.env"
+    if [ "$refresh" = 1 ]; then
+      load_config "$state"
+      keep_bp="$FC_CFG_BRANCH_PREFIX" keep_docs="$FC_CFG_DOCS_DIR"
+      resolve_config "$FC_WORKSPACE" "$(field "$state" coordinator "$FC_COL_MAIN")"
+      FC_CFG_BRANCH_PREFIX="$keep_bp" FC_CFG_DOCS_DIR="$keep_docs"
+      write_config_snapshot "$state"
+      printf 'Refreshed the team stack for %s (branch_prefix and docs_dir stay fixed for a running feature).\n\n' "$id"
+    fi
+    load_config "$state"
+    printf 'Team stack for %s (snapshot %s/config.env)\n\n' "$id" "$state"
+    for key in $FC_CONF_KEYS; do
+      var=$(cfg_var "$key")
+      printf '  %-17s %s\n' "$key" "${!var:-(unset)}"
+    done
+    printf '\nCode host per repo:\n'
+    awk -F '\t' '{ printf "  %-20s %s\n", $1, $8 }' "$state/repos.tsv"
+    printf '\nProvider references:\n'
+    provider_refs "$state" | sed 's/^/  /'
+    return 0
+  fi
+  if [ -n "$WS_OPT" ]; then ws=$(fc_canon "$WS_OPT"); else ws=$(pwd -P); fi
+  local anchor_main=""
+  [ -n "$anchor" ] && anchor_main=$(resolve_repo "$anchor" "$ws")
+  resolve_config "$ws" "$anchor_main"
+  printf 'Team stack for workspace %s%s\n\n' "$ws" "${anchor_main:+ (anchor $(basename "$anchor_main"))}"
+  for key in $FC_CONF_KEYS; do
+    var=$(cfg_var "$key")
+    src="FC_SRC_${var#FC_CFG_}"
+    printf '  %-17s %-22s from %s\n' "$key" "${!var:-(unset)}" "${!src}"
+  done
+  if [ -z "$anchor_main" ]; then
+    printf '\nPass --anchor REPO to include the team file %s.\n' "$FC_CONF_FILE"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# launch / dispatch
+# ---------------------------------------------------------------------------
+
+FC_HELP_CACHE_CLI="" FC_HELP_CACHE=""
+cli_has() {
+  local cli="$1" flag="$2"
+  command -v "$cli" >/dev/null 2>&1 || return 1
+  if [ "$FC_HELP_CACHE_CLI" != "$cli" ]; then
+    FC_HELP_CACHE=$("$cli" --help 2>/dev/null || true)
+    FC_HELP_CACHE_CLI="$cli"
+  fi
+  case "$FC_HELP_CACHE" in
+    *"$flag"*) return 0 ;;
+  esac
+  return 1
+}
+
+# q WORD - quote for a POSIX shell, readably ('...' only when needed)
+q() {
+  local s="$1" sq="'" rep="'\\''"
+  case "$s" in
+    '' | *[!A-Za-z0-9_./:@%+=,-]*) printf "'%s'" "${s//$sq/$rep}" ;;
+    *) printf '%s' "$s" ;;
+  esac
+}
+
+# repo_model STATE WHO - model.<repo> from the workspace or team config
+repo_model() {
+  local state="$1" who="$2" ws anchor v
+  ws=$(dirname "$(dirname "$state")")
+  anchor=$(field "$state" coordinator "$FC_COL_MAIN")
+  v=$(fc_conf_get "$ws/.feature/config" "model.$who" 2>/dev/null) && { printf '%s\n' "$v"; return; }
+  v=$(fc_conf_get "$anchor/$FC_CONF_FILE" "model.$who" 2>/dev/null) && { printf '%s\n' "$v"; return; }
+  printf '%s\n' "$FC_CFG_WORKER_MODEL"
+}
+
+# launch_command STATE ID WHO CLI EXTRA -> one shell command line
+launch_command() {
+  local state="$1" id="$2" who="$3" cli="$4" extra="$5"
+  local role wt anchor_wt prompt cmd o other model add_dirs=1
+  role=$(field "$state" "$who" "$FC_COL_ROLE")
+  wt=$(field "$state" "$who" "$FC_COL_WT")
+  anchor_wt=$(field "$state" coordinator "$FC_COL_WT")
+  if [ "$role" = anchor ]; then
+    prompt="Feature $id: you are the coordinator session in the anchor worktree. Use the feature-coordinator:coordinating-multi-repo-features skill. Feature state: $state"
+  else
+    prompt="Feature $id: you are the worker session for $who. Use the feature-coordinator:working-a-repo-slice skill and read your brief first: $state/briefs/worker-$who.md"
+  fi
+  # FC_SESSION_WORKTREE tells the plugin's hooks which session this is even
+  # after the agent's shell has cd'ed somewhere else.
+  cmd="cd $(q "$wt") && FC_SESSION_WORKTREE=$(q "$wt")"
+  case "$cli" in
+    claude)
+      if [ "$role" = anchor ]; then
+        cmd="$cmd CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 claude --model $(q "$FC_CFG_COORDINATOR_MODEL")"
+      else
+        model=$(repo_model "$state" "$who")
+        cmd="$cmd claude --model $(q "$model")"
+      fi
+      cli_has claude --effort && cmd="$cmd --effort $(q "$FC_CFG_EFFORT")"
+      ;;
+    copilot) cmd="$cmd copilot" ;;
+    codex)
+      # Codex's --add-dir makes a directory writable, and its sandbox already
+      # lets the session read everything. So no sibling worktrees: only the
+      # state folder and this repo's git directory (commits write there).
+      cmd="$cmd codex"
+      cli_has codex --sandbox && cmd="$cmd --sandbox workspace-write"
+      if cli_has codex --add-dir; then
+        cmd="$cmd --add-dir $(q "$state") --add-dir $(q "$(fc_canon "$(git -C "$wt" rev-parse --git-common-dir)" "$wt")")"
+      fi
+      add_dirs=0
+      ;;
+    *) fc_die "unknown --cli '$cli' (claude, copilot or codex)" ;;
+  esac
+  if [ "$add_dirs" = 1 ]; then
+    if [ "$role" = anchor ]; then
+      for o in $(fc_participants "$state" worker); do
+        other=$(field "$state" "$o" "$FC_COL_WT")
+        cmd="$cmd --add-dir $(q "$other")"
+      done
+    else
+      cmd="$cmd --add-dir $(q "$anchor_wt")"
+    fi
+    cmd="$cmd --add-dir $(q "$state")"
+  fi
+  [ -n "$extra" ] && cmd="$cmd $extra"
+  case "$cli" in
+    copilot)
+      if cli_has copilot --interactive; then
+        cmd="$cmd -i $(q "$prompt")"
+      else
+        cmd="$cmd  # then send: $prompt"
+      fi
+      ;;
+    *) cmd="$cmd $(q "$prompt")" ;;
+  esac
+  printf '%s\n' "$cmd"
+}
+
+run_launch() {
+  local state="$1" id="$2" cli="$3" tmux="$4" extra="$5"
+  shift 5
+  local who cmd session wt
+  session="fc-$id"
+  for who in "$@"; do
+    cmd=$(launch_command "$state" "$id" "$who" "$cli" "$extra")
+    wt=$(field "$state" "$who" "$FC_COL_WT")
+    if [ "$tmux" = 1 ]; then
+      command -v tmux >/dev/null 2>&1 || fc_die "--tmux needs tmux on PATH"
+      case "$cmd" in *"  # then send:"*) cmd="${cmd%%  # then send:*}" ;; esac
+      if tmux has-session -t "$session" 2>/dev/null; then
+        tmux new-window -t "$session" -n "$who" -c "$wt" "$cmd"
+      else
+        tmux new-session -d -s "$session" -n "$who" -c "$wt" "$cmd"
+      fi
+      printf 'started %s in tmux session %s\n' "$who" "$session"
+    else
+      printf '%s\n' "$cmd"
+    fi
+  done
+  [ "$tmux" = 1 ] && printf 'attach with: tmux attach -t %s\n' "$session"
+  return 0
+}
+
+expand_targets() {
+  local state="$1" t
+  shift
+  for t in "$@"; do
+    case "$t" in
+      workers) fc_participants "$state" worker ;;
+      *) has_who "$state" "$t" || fc_die "unknown participant '$t'"; printf '%s\n' "$t" ;;
+    esac
+  done
+}
+
+cmd_launch() {
+  local id="" cli="" tmux=0 extra="" state list targets=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --cli) need_arg "$@"; cli="$2"; shift 2 ;;
+      --tmux) tmux=1; shift ;;
+      --extra) need_arg "$@"; extra="$2"; shift 2 ;;
+      -*) fc_die "launch: unknown option $1" ;;
+      *) if [ -z "$id" ]; then id="$1"; else targets[${#targets[@]}]="$1"; fi; shift ;;
+    esac
+  done
+  [ -n "$id" ] || fc_die "launch: missing feature ID"
+  [ "${#targets[@]}" -gt 0 ] || fc_die "launch: name a target (coordinator, workers or a repo)"
+  state=$(state_dir "$id")
+  require_state "$state"
+  load_config "$state"
+  [ -n "$cli" ] || cli="$FC_CFG_DEFAULT_CLI"
+  list=$(expand_targets "$state" "${targets[@]}") || exit 1
+  # shellcheck disable=SC2086
+  set -- $list
+  run_launch "$state" "$id" "$cli" "$tmux" "$extra" "$@"
+}
+
+render_brief() {
+  local state="$1" id="$2" who="$3" template text val contracts gate lock_ref pair refs
+  local anchor_wt main
+  template="$FC_SKILLS_DIR/dispatching-repo-workers/worker-brief-template.md"
+  [ -f "$template" ] || fc_die "missing template $template"
+  load_config "$state"
+  text=$(cat "$template")
+  contracts=$(fc_lock_rows "$state" "$who" | awk -F '\t' '{ printf "- `%s` (locked blob %s)\n", $1, substr($2, 1, 12) }')
+  [ -n "$contracts" ] || contracts="- none locked for this repo"
+  gate=$(field "$state" "$who" "$FC_COL_GATE")
+  [ -n "$gate" ] || gate="none configured - ask the coordinator which checks gate this repo"
+  lock_ref=$(awk '/^# commit=/ { sub(/^# commit=/, ""); print; exit }' "$state/contracts.lock" 2>/dev/null || true)
+  [ -n "$lock_ref" ] || lock_ref="not locked"
+  refs=$(provider_refs "$state" | sed 's/^/- /')
+  anchor_wt=$(field "$state" coordinator "$FC_COL_WT")
+  main=$(field "$state" "$who" "$FC_COL_MAIN")
+  for pair in \
+    "FEATURE_ID=$id" "REPO=$who" \
+    "WORKTREE=$(field "$state" "$who" "$FC_COL_WT")" \
+    "BRANCH=$(field "$state" "$who" "$FC_COL_BRANCH")" \
+    "DEFAULT_BRANCH=$(fc_default_branch "$main")" \
+    "CODE_HOST=$(field "$state" "$who" "$FC_COL_HOST")" \
+    "TRACKER=$FC_CFG_TRACKER" "CHAT=$FC_CFG_CHAT" \
+    "ANCHOR_WORKTREE=$anchor_wt" \
+    "FEATURE_DOCS=$anchor_wt/$FC_CFG_DOCS_DIR/$id" \
+    "LOCK_COMMIT=$lock_ref" "GATE=$gate" "SCRIPT=$FC_THIS" "STATE=$state"; do
+    val="${pair#*=}"
+    text="${text//\{\{${pair%%=*}\}\}/$val}"
+  done
+  text="${text//\{\{CONTRACTS\}\}/$contracts}"
+  text="${text//\{\{PROVIDER_REFS\}\}/$refs}"
+  printf '%s\n' "$text" >"$state/briefs/worker-$who.md"
+  printf '%s\n' "$state/briefs/worker-$who.md"
+}
+
+cmd_dispatch() {
+  local id="" cli="" tmux=0 extra="" allow=0 state who brief workers=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --cli) need_arg "$@"; cli="$2"; shift 2 ;;
+      --tmux) tmux=1; shift ;;
+      --extra) need_arg "$@"; extra="$2"; shift 2 ;;
+      --allow-unlocked) allow=1; shift ;;
+      -*) fc_die "dispatch: unknown option $1" ;;
+      *) [ -z "$id" ] || fc_die "dispatch: unexpected argument $1"; id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] || fc_die "dispatch: missing feature ID"
+  state=$(state_dir "$id")
+  require_state "$state"
+  load_config "$state"
+  [ -n "$cli" ] || cli="$FC_CFG_DEFAULT_CLI"
+  if [ ! -f "$state/contracts.lock" ] && [ "$allow" != 1 ]; then
+    fc_die "no contract lock yet: merge the plan PR and run lock first (or pass --allow-unlocked)"
+  fi
+  for who in $(fc_participants "$state" worker); do
+    workers[${#workers[@]}]="$who"
+    brief=$(render_brief "$state" "$id" "$who") || exit 1
+    printf 'brief: %s\n' "$brief"
+  done
+  [ "${#workers[@]}" -gt 0 ] || fc_die "no worker repos in this feature"
+  run_launch "$state" "$id" "$cli" "$tmux" "$extra" "${workers[@]}"
+}
+
+# ---------------------------------------------------------------------------
+# contracts
+# ---------------------------------------------------------------------------
+
+cmd_lock() {
+  local id="" ref="" fetch=1 state main default commit prefix tmp meta path blob rest repo target rows=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --ref) need_arg "$@"; ref="$2"; shift 2 ;;
+      --no-fetch) fetch=0; shift ;;
+      -*) fc_die "lock: unknown option $1" ;;
+      *) [ -z "$id" ] || fc_die "lock: unexpected argument $1"; id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] || fc_die "lock: missing feature ID"
+  state=$(state_dir "$id")
+  require_state "$state"
+  load_config "$state"
+  main=$(field "$state" coordinator "$FC_COL_MAIN")
+  if [ "$fetch" = 1 ] && git -C "$main" remote get-url origin >/dev/null 2>&1; then
+    git -C "$main" fetch --quiet origin 2>/dev/null || fc_warn "fetch failed in $main; using local refs"
+  fi
+  if [ -z "$ref" ]; then
+    default=$(fc_default_branch "$main")
+    if git -C "$main" rev-parse --verify --quiet "refs/remotes/origin/$default^{commit}" >/dev/null; then
+      ref="origin/$default"
+    else
+      ref="$default"
+    fi
+  fi
+  commit=$(git -C "$main" rev-parse --verify --quiet "$ref^{commit}") || fc_die "ref '$ref' not found in $main"
+  prefix="$FC_CFG_DOCS_DIR/$id/contracts/"
+  tmp="$state/contracts.lock.tmp.$$"
+  printf '# feature=%s\n# ref=%s\n# commit=%s\n# locked_at=%s\n' "$id" "$ref" "$commit" "$(now_utc)" >"$tmp"
+  while IFS= read -r -d '' meta; do
+    path="${meta#*$'\t'}"
+    meta="${meta%%$'\t'*}"
+    blob="${meta##* }"
+    rest="${path#"$prefix"}"
+    repo="${rest%%/*}"
+    target="${rest#*/}"
+    if [ "$repo" = "$rest" ] || [ -z "$target" ]; then
+      fc_warn "ignoring $path (expected $prefix<repo>/<path>)"
+      continue
+    fi
+    if [ "$(field "$state" "$repo" "$FC_COL_ROLE")" != worker ]; then
+      fc_warn "ignoring $path: '$repo' is not a worker repo of $id"
+      continue
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$repo" "$target" "$path" "$blob" >>"$tmp"
+    rows=$((rows + 1))
+  done < <(git -C "$main" ls-tree -r -z "$commit" -- "$prefix")
+  if [ "$rows" -eq 0 ]; then
+    rm -f "$tmp"
+    fc_die "no contract copies under $prefix at $ref - is the plan PR merged?"
+  fi
+  mv "$tmp" "$state/contracts.lock"
+  rm -f "$state/unlocked.tsv"
+  printf 'Locked %d contract file(s) for %s at %s (%s)\n' "$rows" "$id" "$ref" "${commit:0:12}"
+  awk -F '\t' '!/^#/ { printf "- %s: %s\n", $1, $2 }' "$state/contracts.lock"
+}
+
+context_who() {
+  if fc_feature_context "$PWD"; then printf '%s\n' "$FC_WHO"; fi
+}
+
+cmd_apply_contract() {
+  local id="" who="" state wt main target blob n=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo) need_arg "$@"; who="$2"; shift 2 ;;
+      -*) fc_die "apply-contract: unknown option $1" ;;
+      *) [ -z "$id" ] || fc_die "apply-contract: unexpected argument $1"; id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] || fc_die "apply-contract: missing feature ID"
+  state=$(state_dir "$id")
+  require_state "$state"
+  [ -n "$who" ] || who=$(context_who)
+  [ -n "$who" ] || fc_die "apply-contract: pass --repo REPO"
+  [ -f "$state/contracts.lock" ] || fc_die "no contract lock for $id"
+  wt=$(field "$state" "$who" "$FC_COL_WT")
+  main=$(field "$state" coordinator "$FC_COL_MAIN")
+  [ -n "$wt" ] || fc_die "unknown repo '$who'"
+  while IFS=$'\t' read -r target blob; do
+    [ -n "$target" ] || continue
+    mkdir -p "$(dirname "$wt/$target")"
+    git -C "$main" cat-file blob "$blob" >"$wt/$target"
+    printf 'wrote %s\n' "$target"
+    n=$((n + 1))
+  done < <(fc_lock_rows "$state" "$who")
+  if [ "$n" -eq 0 ]; then
+    printf 'No locked contract files for %s.\n' "$who"
+  else
+    printf 'Commit these as the contract commit for %s before implementing.\n' "$who"
+  fi
+}
+
+# contract_drift STATE WHO -> prints drifted targets, returns 1 when any drift
+contract_drift() {
+  local state="$1" who="$2" wt target blob actual drift=0
+  wt=$(field "$state" "$who" "$FC_COL_WT")
+  while IFS=$'\t' read -r target blob; do
+    [ -n "$target" ] || continue
+    fc_is_unlocked "$state" "$who" "$target" && continue
+    if [ ! -f "$wt/$target" ]; then
+      printf 'missing   %s\n' "$target"
+      drift=1
+      continue
+    fi
+    actual=$(git -C "$wt" hash-object --path="$target" "$wt/$target")
+    if [ "$actual" != "$blob" ]; then
+      printf 'changed   %s\n' "$target"
+      drift=1
+    fi
+  done < <(fc_lock_rows "$state" "$who")
+  return "$drift"
+}
+
+cmd_contract_check() {
+  local id="" who="" quiet=0 state out
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo) need_arg "$@"; who="$2"; shift 2 ;;
+      --quiet) quiet=1; shift ;;
+      -*) fc_die "contract-check: unknown option $1" ;;
+      *) [ -z "$id" ] || fc_die "contract-check: unexpected argument $1"; id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] || fc_die "contract-check: missing feature ID"
+  state=$(state_dir "$id")
+  require_state "$state"
+  [ -n "$who" ] || who=$(context_who)
+  [ -n "$who" ] || fc_die "contract-check: pass --repo REPO"
+  if [ ! -f "$state/contracts.lock" ]; then
+    [ "$quiet" = 1 ] || printf 'No contract lock for %s yet.\n' "$id"
+    return 0
+  fi
+  if out=$(contract_drift "$state" "$who"); then
+    [ "$quiet" = 1 ] || printf 'Contracts for %s match the lock.\n' "$who"
+    return 0
+  fi
+  printf 'Contract drift in %s (locked files differ from the merged plan):\n%s\n' "$who" "$out"
+  printf 'Restore them with: bash %s apply-contract %s --repo %s\n' "$FC_THIS" "$id" "$who"
+  printf 'A real contract change is a cross-service ripple: stop and message the coordinator.\n'
+  return 1
+}
+
+cmd_unlock() {
+  local id="" who="" path="" reason="" state
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo) need_arg "$@"; who="$2"; shift 2 ;;
+      --path) need_arg "$@"; path="$2"; shift 2 ;;
+      --reason) need_arg "$@"; reason="$2"; shift 2 ;;
+      -*) fc_die "unlock: unknown option $1" ;;
+      *) [ -z "$id" ] || fc_die "unlock: unexpected argument $1"; id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] && [ -n "$who" ] && [ -n "$path" ] && [ -n "$reason" ] ||
+    fc_die "unlock: usage: unlock ID --repo REPO --path PATH --reason TEXT"
+  state=$(state_dir "$id")
+  require_state "$state"
+  case "$reason" in *$'\t'* | *$'\n'*) fc_die "unlock: reason must be one line" ;; esac
+  printf '%s\t%s\t%s\t%s\n' "$who" "$path" "$reason" "$(now_utc)" >>"$state/unlocked.tsv"
+  printf 'Unlocked %s in %s. Re-lock after the plan amendment merges.\n' "$path" "$who"
+}
+
+# ---------------------------------------------------------------------------
+# mail / decisions
+# ---------------------------------------------------------------------------
+
+cmd_mail() {
+  local id="" sub="" from="" to="" subject="" body="" body_file="" for_who="" keep=0
+  local state file n=0 stamp
+  [ "$#" -ge 2 ] || fc_die "mail: usage: mail ID send|inbox ..."
+  id="$1"
+  sub="$2"
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --from) need_arg "$@"; from="$2"; shift 2 ;;
+      --to) need_arg "$@"; to="$2"; shift 2 ;;
+      --subject) need_arg "$@"; subject="$2"; shift 2 ;;
+      --body) need_arg "$@"; body="$2"; shift 2 ;;
+      --body-file) need_arg "$@"; body_file="$2"; shift 2 ;;
+      --for) need_arg "$@"; for_who="$2"; shift 2 ;;
+      --keep) keep=1; shift ;;
+      *) fc_die "mail: unknown argument $1" ;;
+    esac
+  done
+  state=$(state_dir "$id")
+  require_state "$state"
+  case "$sub" in
+    send)
+      [ -n "$from" ] && [ -n "$to" ] && [ -n "$subject" ] ||
+        fc_die "mail send: --from, --to and --subject are required"
+      has_who "$state" "$to" || fc_die "mail send: unknown recipient '$to'"
+      if [ -n "$body_file" ]; then
+        body=$(cat "$body_file")
+      elif [ -z "$body" ] && [ ! -t 0 ]; then
+        body=$(cat)
+      fi
+      mkdir -p "$state/mail/$to"
+      stamp=$(date -u +%Y%m%dT%H%M%SZ)
+      file="$state/mail/$to/$stamp-$from-$$.md"
+      printf 'From: %s\nTo: %s\nDate: %s\nSubject: %s\n\n%s\n' \
+        "$from" "$to" "$(now_utc)" "$subject" "$body" >"$file"
+      printf 'sent %s\n' "$file"
+      ;;
+    inbox)
+      [ -n "$for_who" ] || for_who=$(context_who)
+      [ -n "$for_who" ] || fc_die "mail inbox: pass --for WHO"
+      mkdir -p "$state/mail/$for_who/read"
+      for file in "$state/mail/$for_who"/*.md; do
+        [ -f "$file" ] || continue
+        n=$((n + 1))
+        printf -- '----- %s\n' "$(basename "$file")"
+        cat "$file"
+        [ "$keep" = 1 ] || mv "$file" "$state/mail/$for_who/read/"
+      done
+      [ "$n" -gt 0 ] || printf 'No new messages for %s.\n' "$for_who"
+      ;;
+    *) fc_die "mail: unknown subcommand '$sub' (send or inbox)" ;;
+  esac
+}
+
+cmd_log_decision() {
+  local id="" who="" tier="" decision="" why="" alts="" pr="" state
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --who | --repo) need_arg "$@"; who="$2"; shift 2 ;;
+      --tier) need_arg "$@"; tier="$2"; shift 2 ;;
+      --decision) need_arg "$@"; decision="$2"; shift 2 ;;
+      --why) need_arg "$@"; why="$2"; shift 2 ;;
+      --alternatives) need_arg "$@"; alts="$2"; shift 2 ;;
+      --pr) need_arg "$@"; pr="$2"; shift 2 ;;
+      -*) fc_die "log-decision: unknown option $1" ;;
+      *) [ -z "$id" ] || fc_die "log-decision: unexpected argument $1"; id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] && [ -n "$decision" ] && [ -n "$why" ] ||
+    fc_die "log-decision: ID, --decision and --why are required"
+  case "$tier" in 1 | 2 | 3) ;; *) fc_die "log-decision: --tier must be 1, 2 or 3" ;; esac
+  state=$(state_dir "$id")
+  require_state "$state"
+  [ -n "$who" ] || who=$(context_who)
+  [ -n "$who" ] || who=unknown
+  {
+    printf '### %s - %s - Tier %s\n' "$(now_utc)" "$who" "$tier"
+    printf -- '- Decision: %s\n- Why: %s\n' "$decision" "$why"
+    [ -n "$alts" ] && printf -- '- Alternatives considered: %s\n' "$alts"
+    [ -n "$pr" ] && printf -- '- PR: %s\n' "$pr"
+    printf '\n'
+  } >>"$state/decisions.md"
+  printf 'logged to %s\n' "$state/decisions.md"
+}
+
+# ---------------------------------------------------------------------------
+# code-host adapters (read-only lookups; never merge, never approve)
+# ---------------------------------------------------------------------------
+
+# pr_summary HOST MAIN BRANCH -> "#12 open draft" style text, "none", or "n/a"
+pr_summary() {
+  local host="$1" main="$2" branch="$3" ref org project repo path out n st draft
+  case "$host" in
+    github)
+      command -v gh >/dev/null 2>&1 || { printf 'n/a (no gh)'; return; }
+      ref=$(fc_github_slug "$main") || { printf 'n/a'; return; }
+      gh pr list -R "$ref" --head "$branch" --state all --limit 1 \
+        --json number,state,isDraft,reviewDecision \
+        --jq 'if length == 0 then "none" else (.[0] | "#\(.number) \(.state | ascii_downcase)\(if .isDraft then " draft" else "" end)\(if .reviewDecision then " " + (.reviewDecision | ascii_downcase) else "" end)") end' \
+        2>/dev/null || printf '?'
+      ;;
+    azure-repos)
+      command -v az >/dev/null 2>&1 || { printf 'n/a (no az)'; return; }
+      ref=$(fc_azure_ref "$main") || { printf 'n/a'; return; }
+      IFS=$'\t' read -r org project repo <<<"$ref"
+      out=$(az repos pr list --org "$org" --project "$project" --repository "$repo" \
+        --source-branch "$branch" --status all --top 1 \
+        --query '[0].[pullRequestId, status, isDraft]' -o tsv 2>/dev/null) || { printf '?'; return; }
+      [ -n "$out" ] || { printf 'none'; return; }
+      IFS=$'\t' read -r n st draft <<<"$out"
+      printf '!%s %s' "$n" "$st"
+      case "$draft" in [Tt]rue) printf ' draft' ;; esac
+      ;;
+    gitlab)
+      command -v glab >/dev/null 2>&1 || { printf 'n/a (no glab)'; return; }
+      path=$(fc_gitlab_path "$main") || { printf 'n/a'; return; }
+      out=$(glab mr list -R "$path" --source-branch "$branch" --all -F json 2>/dev/null) || { printf '?'; return; }
+      # The first "iid" and "state" in the array belong to the newest MR.
+      n=$(printf '%s' "$out" | grep -o '"iid": *[0-9]*' | head -n 1 | tr -dc '0-9' || true)
+      st=$(printf '%s' "$out" | grep -o '"state": *"[a-z_]*"' | head -n 1 | sed 's/.*"\([a-z_]*\)"$/\1/' || true)
+      if [ -n "$n" ]; then printf '!%s %s' "$n" "$st"; else printf 'none'; fi
+      ;;
+    *) printf 'n/a (%s)' "$host" ;;
+  esac
+}
+
+# pr_merged HOST MAIN BRANCH - true when the host reports a merged PR/MR
+pr_merged() {
+  local host="$1" main="$2" branch="$3" ref org project repo path n
+  case "$host" in
+    github)
+      command -v gh >/dev/null 2>&1 || return 1
+      ref=$(fc_github_slug "$main") || return 1
+      n=$(gh pr list -R "$ref" --head "$branch" --state merged --limit 1 --json number --jq length 2>/dev/null || printf 0)
+      ;;
+    azure-repos)
+      command -v az >/dev/null 2>&1 || return 1
+      ref=$(fc_azure_ref "$main") || return 1
+      IFS=$'\t' read -r org project repo <<<"$ref"
+      n=$(az repos pr list --org "$org" --project "$project" --repository "$repo" \
+        --source-branch "$branch" --status completed --top 1 --query 'length(@)' -o tsv 2>/dev/null || printf 0)
+      ;;
+    gitlab)
+      command -v glab >/dev/null 2>&1 || return 1
+      path=$(fc_gitlab_path "$main") || return 1
+      n=$(glab mr list -R "$path" --source-branch "$branch" --merged -F json 2>/dev/null | grep -c '"iid"' || true)
+      ;;
+    *) return 1 ;;
+  esac
+  [ "${n:-0}" != 0 ] && [ -n "${n:-}" ]
+}
+
+# ---------------------------------------------------------------------------
+# status / where / list
+# ---------------------------------------------------------------------------
+
+cmd_status() {
+  local id="" remote=1 state who role wt main branch head dirty sync contracts pr unread lockinfo host
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --no-remote | --no-gh) remote=0; shift ;;
+      -*) fc_die "status: unknown option $1" ;;
+      *) [ -z "$id" ] || fc_die "status: unexpected argument $1"; id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] || fc_die "status: missing feature ID"
+  state=$(state_dir "$id")
+  require_state "$state"
+  load_config "$state"
+  lockinfo=$(awk '/^# (ref|commit|locked_at)=/ { sub(/^# /, ""); printf "%s ", $0 }' "$state/contracts.lock" 2>/dev/null || true)
+  printf '## %s\n\nTracker: %s  -  Chat: %s\nContract lock: %s\n\n' "$id" "$FC_CFG_TRACKER" "$FC_CFG_CHAT" "${lockinfo:-none yet}"
+  printf '| Who | Role | Branch | HEAD | Uncommitted | vs upstream | Contracts | PR | Unread mail |\n'
+  printf '|---|---|---|---|---|---|---|---|---|\n'
+  for who in $(fc_participants "$state"); do
+    role=$(field "$state" "$who" "$FC_COL_ROLE")
+    wt=$(field "$state" "$who" "$FC_COL_WT")
+    main=$(field "$state" "$who" "$FC_COL_MAIN")
+    host=$(field "$state" "$who" "$FC_COL_HOST")
+    if [ ! -d "$wt" ]; then
+      printf '| %s | %s | - | - | worktree missing | - | - | - | - |\n' "$who" "$role"
+      continue
+    fi
+    branch=$(git -C "$wt" branch --show-current 2>/dev/null || true)
+    head=$(git -C "$wt" rev-parse --short HEAD 2>/dev/null || printf '?')
+    dirty=$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ' || true)
+    sync=$(git -C "$wt" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null | awk '{ printf "behind %s, ahead %s", $1, $2 }' || true)
+    [ -n "$sync" ] || sync="no upstream"
+    contracts="-"
+    if [ "$role" = worker ] && [ -f "$state/contracts.lock" ]; then
+      if contract_drift "$state" "$who" >/dev/null; then contracts="ok"; else contracts="DRIFT"; fi
+    fi
+    if [ "$remote" = 1 ]; then pr=$(pr_summary "$host" "$main" "${branch:-}"); else pr="-"; fi
+    unread=$(find "$state/mail/$who" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ' || true)
+    printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+      "$who" "$role" "${branch:-detached}" "$head" "$dirty" "$sync" "$contracts" "$pr" "$unread"
+  done
+}
+
+cmd_where() {
+  local dir="$PWD" anchor_wt docs
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --dir) need_arg "$@"; dir="$2"; shift 2 ;;
+      *) fc_die "where: unknown argument $1" ;;
+    esac
+  done
+  if ! fc_feature_context "$dir"; then
+    printf 'Not inside a feature worktree: %s\n' "$dir"
+    return 1
+  fi
+  FC_ANCHOR="" FC_WORKSPACE=""
+  fc_read_env "$FC_STATE/feature.env" || true
+  load_config "$FC_STATE"
+  anchor_wt=$(field "$FC_STATE" coordinator "$FC_COL_WT")
+  docs="$anchor_wt/$FC_CFG_DOCS_DIR/$FC_ID"
+  printf 'feature:   %s\n' "$FC_ID"
+  if [ "$FC_ROLE" = anchor ]; then
+    printf 'role:      coordinator (anchor repo %s)\n' "$FC_REPO"
+  else
+    printf 'role:      worker for %s\n' "$FC_REPO"
+  fi
+  printf 'who:       %s\nworktree:  %s\nbranch:    %s\nworkspace: %s\nstate:     %s\n' \
+    "$FC_WHO" "$FC_TOPLEVEL" "$(git -C "$FC_TOPLEVEL" branch --show-current 2>/dev/null || true)" \
+    "${FC_WORKSPACE:-?}" "$FC_STATE"
+  printf 'docs:      %s (spec.md, plan.md, contracts/)\n' "$docs"
+  if [ -f "$FC_STATE/contracts.lock" ]; then
+    printf 'lock:      %s\n' "$(awk '/^# commit=/ { sub(/^# commit=/, ""); print substr($0, 1, 12); exit }' "$FC_STATE/contracts.lock")"
+  else
+    printf 'lock:      none yet\n'
+  fi
+  [ "$FC_ROLE" = worker ] && printf 'brief:     %s\n' "$FC_STATE/briefs/worker-$FC_WHO.md"
+  printf 'script:    bash %s\n' "$FC_THIS"
+  printf 'stack:\n'
+  provider_refs "$FC_STATE" | sed 's/^/  /'
+}
+
+cmd_list() {
+  local ws d found=0
+  if [ -n "$WS_OPT" ]; then ws=$(fc_canon "$WS_OPT"); else ws=$(pwd -P); fi
+  for d in "$ws"/.feature/*/feature.env; do
+    [ -f "$d" ] || continue
+    found=1
+    FC_ID="" FC_CREATED="" FC_ANCHOR=""
+    fc_read_env "$d"
+    printf '%s  anchor=%s  created=%s  participants=%s\n' "$FC_ID" "$FC_ANCHOR" "$FC_CREATED" \
+      "$(awk 'END { print NR }' "${d%/feature.env}/repos.tsv" 2>/dev/null || printf 0)"
+  done
+  [ "$found" = 1 ] || printf 'No features under %s/.feature\n' "$ws"
+}
+
+# ---------------------------------------------------------------------------
+# finish
+# ---------------------------------------------------------------------------
+
+# branch_is_safe HOST MAIN BRANCH - nothing on BRANCH would be lost
+branch_is_safe() {
+  local host="$1" main="$2" branch="$3" default count
+  git -C "$main" show-ref --verify --quiet "refs/heads/$branch" || return 0
+  default=$(fc_default_branch "$main")
+  if git -C "$main" rev-parse --verify --quiet "refs/remotes/origin/$default" >/dev/null; then
+    count=$(git -C "$main" rev-list --count "origin/$default..$branch" 2>/dev/null || printf 1)
+  else
+    count=$(git -C "$main" rev-list --count "$default..$branch" 2>/dev/null || printf 1)
+  fi
+  [ "$count" = 0 ] && return 0
+  # Squash and rebase merges leave the branch's own commits unreachable.
+  pr_merged "$host" "$main" "$branch"
+}
+
+participant_branches() {
+  local state="$1" who="$2" id="$3"
+  if [ "$(field "$state" "$who" "$FC_COL_ROLE")" = anchor ]; then
+    printf '%s%s-spec %s%s-plan %s%s-docs\n' "$FC_CFG_BRANCH_PREFIX" "$id" "$FC_CFG_BRANCH_PREFIX" "$id" "$FC_CFG_BRANCH_PREFIX" "$id"
+  else
+    field "$state" "$who" "$FC_COL_BRANCH"
+  fi
+}
+
+cmd_finish() {
+  local id="" force=0 keep_branches=0 keep_state=0 state who main wt b problems="" common wtname host
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      --keep-branches) keep_branches=1; shift ;;
+      --keep-state) keep_state=1; shift ;;
+      -*) fc_die "finish: unknown option $1" ;;
+      *) [ -z "$id" ] || fc_die "finish: unexpected argument $1"; id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] || fc_die "finish: missing feature ID"
+  state=$(state_dir "$id")
+  require_state "$state"
+  load_config "$state"
+  for who in $(fc_participants "$state"); do
+    main=$(field "$state" "$who" "$FC_COL_MAIN")
+    wt=$(field "$state" "$who" "$FC_COL_WT")
+    host=$(field "$state" "$who" "$FC_COL_HOST")
+    if [ -d "$wt" ] && [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+      problems="$problems\n- $who: uncommitted changes in $wt"
+    fi
+    if git -C "$main" remote get-url origin >/dev/null 2>&1; then
+      git -C "$main" fetch --quiet origin 2>/dev/null || true
+    fi
+    for b in $(participant_branches "$state" "$who" "$id"); do
+      branch_is_safe "$host" "$main" "$b" || problems="$problems\n- $who: $b has commits that are not merged"
+    done
+  done
+  if [ -n "$problems" ] && [ "$force" != 1 ]; then
+    printf 'Not finishing %s:%b\nMerge or resolve these first, or pass --force to discard them.\n' "$id" "$problems" >&2
+    return 1
+  fi
+  for who in $(fc_participants "$state"); do
+    main=$(field "$state" "$who" "$FC_COL_MAIN")
+    wt=$(field "$state" "$who" "$FC_COL_WT")
+    wtname=$(basename "$wt")
+    if [ -d "$wt" ]; then
+      if [ "$force" = 1 ]; then
+        git -C "$main" worktree remove --force --force "$wt" || fc_warn "could not remove $wt"
+      else
+        git -C "$main" worktree remove "$wt" || fc_warn "could not remove $wt"
+      fi
+    fi
+    git -C "$main" worktree prune 2>/dev/null || true
+    if [ "$keep_branches" != 1 ]; then
+      for b in $(participant_branches "$state" "$who" "$id"); do
+        if git -C "$main" show-ref --verify --quiet "refs/heads/$b"; then
+          git -C "$main" branch -D "$b" >/dev/null
+        fi
+      done
+    fi
+    common=$(fc_canon "$(git -C "$main" rev-parse --git-common-dir)" "$main")
+    rm -f "$common/feature-coordinator/$wtname.env"
+    printf 'cleaned %s\n' "$who"
+  done
+  if [ "$keep_state" != 1 ]; then
+    mkdir -p "$(dirname "$state")/_archive"
+    mv "$state" "$(dirname "$state")/_archive/$id-$(date -u +%Y%m%dT%H%M%SZ)"
+    printf 'archived feature state under %s/_archive\n' "$(dirname "$state")"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
+main() {
+  local cmd args=()
+  [ "$#" -gt 0 ] || { usage; return 0; }
+  cmd="$1"
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --workspace) need_arg "$@"; WS_OPT="$2"; shift 2 ;;
+      --workspace=*) WS_OPT="${1#--workspace=}"; shift ;;
+      *) args[${#args[@]}]="$1"; shift ;;
+    esac
+  done
+  set -- ${args[@]+"${args[@]}"}
+  case "$cmd" in
+    start) cmd_start "$@" ;;
+    config) cmd_config "$@" ;;
+    launch) cmd_launch "$@" ;;
+    dispatch) cmd_dispatch "$@" ;;
+    lock) cmd_lock "$@" ;;
+    apply-contract) cmd_apply_contract "$@" ;;
+    contract-check) cmd_contract_check "$@" ;;
+    unlock) cmd_unlock "$@" ;;
+    mail) cmd_mail "$@" ;;
+    log-decision) cmd_log_decision "$@" ;;
+    status) cmd_status "$@" ;;
+    where) cmd_where "$@" ;;
+    list) cmd_list "$@" ;;
+    finish) cmd_finish "$@" ;;
+    help | -h | --help) usage ;;
+    *) fc_die "unknown command '$cmd' (try: help)" ;;
+  esac
+}
+
+main "$@"

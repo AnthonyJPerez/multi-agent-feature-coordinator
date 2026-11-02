@@ -1,0 +1,494 @@
+# fc-lib - shared helpers for feature-coordinator's workspace script and hooks.
+#
+# Sourced, never executed. Kept compatible with bash 3.2 (the macOS default):
+# no associative arrays, no mapfile, no ${x,,}, no negative array indexes, and
+# empty arrays are expanded with the ${a[@]+"${a[@]}"} idiom.
+#
+# State lives in two places, both outside tracked files:
+#   <workspace>/.feature/<ID>/                 shared feature state (untracked)
+#   <repo git common dir>/feature-coordinator/<worktree>.env
+#                                              per-worktree record the hooks read
+
+FC_DOCS_DIR_DEFAULT="docs/features"
+
+# bash 5.2 expands "&" in ${var//pattern/replacement}; keep replacements literal.
+shopt -u patsub_replacement 2>/dev/null || true
+
+fc_die() {
+  printf 'feature-workspace: %s\n' "$*" >&2
+  exit 1
+}
+
+fc_warn() {
+  printf 'feature-workspace: warning: %s\n' "$*" >&2
+}
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+# fc_to_unix PATH - turn a Windows drive path (C:\x or C:/x) into /c/x.
+fc_to_unix() {
+  local p="$1" drive rest
+  case "$p" in
+    [A-Za-z]:[\\/]*)
+      if command -v cygpath >/dev/null 2>&1; then
+        cygpath -u "$p"
+        return
+      fi
+      drive=$(printf '%s' "${p:0:1}" | tr '[:upper:]' '[:lower:]')
+      rest="${p:2}"
+      rest="${rest//\\//}"
+      printf '/%s%s\n' "$drive" "$rest"
+      return
+      ;;
+  esac
+  printf '%s\n' "$p"
+}
+
+# fc_normpath PATH [BASE] - absolute path with . and .. removed, no symlink
+# resolution and no requirement that the path exists.
+fc_normpath() {
+  local p seg out="" rest
+  p=$(fc_to_unix "$1")
+  # shellcheck disable=SC2088 # "~/" is matched literally, not expanded
+  case "$p" in
+    /*) ;;
+    "~") p="$HOME" ;;
+    "~/"*) p="$HOME/${p#\~/}" ;;
+    *) p="${2:-$PWD}/$p" ;;
+  esac
+  rest="$p"
+  while [ -n "$rest" ]; do
+    seg="${rest%%/*}"
+    if [ "$seg" = "$rest" ]; then rest=""; else rest="${rest#*/}"; fi
+    case "$seg" in
+      '' | .) ;;
+      ..) out="${out%/*}" ;;
+      *) out="$out/$seg" ;;
+    esac
+  done
+  printf '%s\n' "${out:-/}"
+}
+
+# fc_canon PATH [BASE] - like fc_normpath, but resolves symlinks in the
+# deepest existing ancestor directory (so /tmp and /private/tmp compare equal).
+fc_canon() {
+  local p d tail=""
+  p=$(fc_normpath "$1" "${2:-$PWD}")
+  d="$p"
+  while [ ! -d "$d" ]; do
+    tail="/${d##*/}$tail"
+    d="${d%/*}"
+    [ -n "$d" ] || d="/"
+  done
+  d=$(cd "$d" 2>/dev/null && pwd -P) || d=""
+  if [ -z "$d" ]; then
+    printf '%s\n' "$p"
+  elif [ "$d" = "/" ]; then
+    printf '%s\n' "${tail:-/}"
+  else
+    printf '%s\n' "$d$tail"
+  fi
+}
+
+# fc_is_within PATH ROOT - true when PATH is ROOT or below it. Both canonical.
+fc_is_within() {
+  [ -n "$2" ] || return 1
+  [ "$1" = "$2" ] && return 0
+  case "$1" in
+    "$2"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# fc_temp_roots - canonical temp directories writes are always allowed into.
+fc_temp_roots() {
+  local d
+  for d in /tmp /var/tmp "${TMPDIR:-}"; do
+    [ -n "$d" ] && [ -d "$d" ] && (cd "$d" && pwd -P)
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Small env-file format: one FC_KEY=value per line, read without sourcing.
+# ---------------------------------------------------------------------------
+
+fc_read_env() {
+  local line re='^(FC_[A-Z0-9_]+)=(.*)$'
+  [ -r "$1" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ $line =~ $re ]]; then
+      printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
+    fi
+  done <"$1"
+  return 0
+}
+
+fc_write_env() {
+  local file="$1" kv
+  shift
+  : >"$file" || return 1
+  for kv in "$@"; do
+    case "$kv" in
+      *$'\n'*) fc_die "refusing to store a value containing a newline: ${kv%%=*}" ;;
+    esac
+    printf '%s\n' "$kv" >>"$file"
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Feature context: is DIR inside a feature worktree, and what is its role?
+# Sets FC_TOPLEVEL FC_COMMON FC_WTNAME FC_ID FC_WHO FC_REPO FC_ROLE FC_STATE
+#      FC_WORKTREE FC_BRANCH FC_SCRIPT (path to feature-workspace)
+# FC_ROLE is "anchor" for the coordinator's worktree and "worker" otherwise.
+# ---------------------------------------------------------------------------
+
+fc_script_dir() {
+  local src="${BASH_SOURCE[0]}"
+  case "$src" in
+    */*) (cd "${src%/*}" && pwd -P) ;;
+    *) pwd -P ;;
+  esac
+}
+
+fc_feature_context() {
+  local dir="${1:-$PWD}" top common record
+  dir=$(fc_to_unix "$dir")
+  case "$dir" in
+    */.worktrees/*) ;;
+    *) return 1 ;;
+  esac
+  [ -d "$dir" ] || return 1
+  top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 1
+  top=$(fc_canon "$top")
+  case "$top" in
+    */.worktrees/*) ;;
+    *) return 1 ;;
+  esac
+  [ "${top%/*}" != "$top" ] || return 1
+  [ "$(basename "$(dirname "$top")")" = ".worktrees" ] || return 1
+  common=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 1
+  common=$(fc_canon "$common" "$dir")
+  FC_WTNAME=$(basename "$top")
+  record="$common/feature-coordinator/$FC_WTNAME.env"
+  FC_ID="" FC_WHO="" FC_REPO="" FC_ROLE="" FC_STATE="" FC_WORKTREE="" FC_BRANCH=""
+  fc_read_env "$record" || return 1
+  [ -n "$FC_ID" ] && [ -n "$FC_STATE" ] || return 1
+  FC_TOPLEVEL="$top"
+  FC_COMMON="$common"
+  FC_SCRIPT="$(fc_script_dir)/feature-workspace"
+  return 0
+}
+
+# repos.tsv has one row per participant ("who"): the coordinator row for the
+# anchor worktree, then one row per worker repo.
+# Columns: 1 who, 2 repo name, 3 role, 4 main checkout, 5 worktree, 6 branch,
+#          7 gate command (may be empty), 8 code host
+FC_COL_WHO=1 FC_COL_REPO=2 FC_COL_ROLE=3 FC_COL_MAIN=4 FC_COL_WT=5 FC_COL_BRANCH=6 FC_COL_GATE=7 FC_COL_HOST=8
+
+# fc_repo_field STATE WHO COLUMN - one column of repos.tsv for WHO.
+fc_repo_field() {
+  local state="$1" who="$2" col="$3"
+  [ -r "$state/repos.tsv" ] || return 1
+  awk -F '\t' -v w="$who" -v c="$col" '$1 == w { print $c; exit }' "$state/repos.tsv"
+}
+
+# fc_participants STATE [ROLE] - "who" names, coordinator first.
+fc_participants() {
+  local state="$1" role="${2:-}"
+  [ -r "$state/repos.tsv" ] || return 0
+  awk -F '\t' -v r="$role" 'r == "" || $3 == r { print $1 }' "$state/repos.tsv"
+}
+
+# fc_lock_rows STATE REPO - locked contract rows for REPO: "target<TAB>blob".
+fc_lock_rows() {
+  local state="$1" repo="$2"
+  [ -r "$state/contracts.lock" ] || return 0
+  awk -F '\t' -v r="$repo" '!/^#/ && $1 == r { print $2 "\t" $4 }' "$state/contracts.lock"
+}
+
+# fc_is_unlocked STATE REPO TARGET
+fc_is_unlocked() {
+  local state="$1" repo="$2" target="$3"
+  [ -r "$state/unlocked.tsv" ] || return 1
+  awk -F '\t' -v r="$repo" -v t="$target" '$1 == r && $2 == t { found = 1 } END { exit found ? 0 : 1 }' \
+    "$state/unlocked.tsv"
+}
+
+# ---------------------------------------------------------------------------
+# JSON (only what the hooks need: string fields out of a payload)
+# ---------------------------------------------------------------------------
+
+fc_json_unescape() {
+  local s="$1"
+  s="${s//\\\\/$'\001'}"
+  s="${s//\\\"/\"}"
+  s="${s//\\\//\/}"
+  s="${s//\\n/$'\n'}"
+  s="${s//\\t/$'\t'}"
+  s="${s//\\r/}"
+  s="${s//$'\001'/\\}"
+  printf '%s' "$s"
+}
+
+# fc_json_get JSON KEY - unescaped value of the first "KEY": "string" pair.
+fc_json_get() {
+  local json="$1" key="$2" re
+  re="\"${key}\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\""
+  if [[ $json =~ $re ]]; then
+    fc_json_unescape "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+# fc_json_bool JSON KEY - true when "KEY": true appears.
+fc_json_bool() {
+  local re="\"${2}\"[[:space:]]*:[[:space:]]*true"
+  [[ $1 =~ $re ]]
+}
+
+fc_json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+# ---------------------------------------------------------------------------
+# Team stack configuration
+#
+# Which tracker, code host and chat a team uses is configuration, never code.
+# Resolution order (first match wins):
+#   1. environment: FC_TRACKER FC_TRACKER_URL FC_TRACKER_PROJECT FC_CODE_HOST
+#      FC_CHAT FC_CHAT_CHANNEL FC_CHAT_WEBHOOK_ENV FC_BRANCH_PREFIX FC_DOCS_DIR
+#      FC_DEFAULT_CLI FC_COORDINATOR_MODEL FC_WORKER_MODEL FC_EFFORT
+#      FC_PROTECTED_PATHS
+#   2. <workspace>/.feature/config          (this engineer's machine)
+#   3. <anchor repo>/.feature-coordinator.conf  (committed, shared by the team)
+#   4. defaults below
+# Files use "key = value" lines; "#" starts a comment line.
+# ---------------------------------------------------------------------------
+
+FC_CONF_FILE=".feature-coordinator.conf"
+FC_CONF_KEYS="tracker tracker.url tracker.project code_host chat chat.channel chat.webhook_env branch_prefix docs_dir default_cli coordinator_model worker_model effort protected_paths"
+
+# fc_conf_get FILE KEY - value of KEY in FILE (quotes stripped)
+fc_conf_get() {
+  local file="$1" key="$2" line k v re='^[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*=[[:space:]]*(.*)$'
+  [ -r "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '' | '#'* | [[:space:]]'#'*) continue ;; esac
+    [[ $line =~ $re ]] || continue
+    k="${BASH_REMATCH[1]}"
+    v="${BASH_REMATCH[2]}"
+    [ "$k" = "$key" ] || continue
+    v="${v%"${v##*[![:space:]]}"}"
+    case "$v" in
+      \"*\") v="${v#\"}"; v="${v%\"}" ;;
+      \'*\') v="${v#\'}"; v="${v%\'}" ;;
+    esac
+    printf '%s\n' "$v"
+    return 0
+  done <"$file"
+  return 1
+}
+
+fc_conf_env_name() {
+  case "$1" in
+    tracker) echo FC_TRACKER ;;
+    tracker.url) echo FC_TRACKER_URL ;;
+    tracker.project) echo FC_TRACKER_PROJECT ;;
+    code_host) echo FC_CODE_HOST ;;
+    chat) echo FC_CHAT ;;
+    chat.channel) echo FC_CHAT_CHANNEL ;;
+    chat.webhook_env) echo FC_CHAT_WEBHOOK_ENV ;;
+    branch_prefix) echo FC_BRANCH_PREFIX ;;
+    docs_dir) echo FC_DOCS_DIR ;;
+    default_cli) echo FC_DEFAULT_CLI ;;
+    coordinator_model) echo FC_COORDINATOR_MODEL ;;
+    worker_model) echo FC_WORKER_MODEL ;;
+    effort) echo FC_EFFORT ;;
+    protected_paths) echo FC_PROTECTED_PATHS ;;
+  esac
+}
+
+fc_conf_default() {
+  case "$1" in
+    tracker) echo none ;;
+    code_host) echo auto ;;
+    chat) echo none ;;
+    branch_prefix) echo feat/ ;;
+    docs_dir) echo "$FC_DOCS_DIR_DEFAULT" ;;
+    default_cli) echo claude ;;
+    coordinator_model) echo opus ;;
+    worker_model) echo sonnet ;;
+    effort) echo high ;;
+    *) echo "" ;;
+  esac
+}
+
+# fc_conf_resolve KEY WORKSPACE ANCHOR_MAIN -> "value<TAB>source"
+fc_conf_resolve() {
+  local key="$1" ws="$2" anchor="$3" env v
+  env=$(fc_conf_env_name "$key")
+  if [ -n "$env" ] && [ -n "${!env:-}" ]; then
+    printf '%s\tenvironment %s\n' "${!env}" "$env"
+    return
+  fi
+  if [ -n "$ws" ] && v=$(fc_conf_get "$ws/.feature/config" "$key"); then
+    printf '%s\t%s\n' "$v" "$ws/.feature/config"
+    return
+  fi
+  if [ -n "$anchor" ] && v=$(fc_conf_get "$anchor/$FC_CONF_FILE" "$key"); then
+    printf '%s\t%s\n' "$v" "$anchor/$FC_CONF_FILE"
+    return
+  fi
+  printf '%s\tdefault\n' "$(fc_conf_default "$key")"
+}
+
+fc_conf_validate() {
+  local key="$1" v="$2" re='^[A-Za-z0-9._/-]+$'
+  case "$key" in
+    tracker) case "$v" in azure-boards | jira | github-issues | linear | gitlab-issues | none) return 0 ;; esac ;;
+    code_host) case "$v" in auto | github | azure-repos | gitlab | bitbucket) return 0 ;; esac ;;
+    chat) case "$v" in teams | slack | discord | none) return 0 ;; esac ;;
+    default_cli) case "$v" in claude | copilot | codex) return 0 ;; esac ;;
+    effort) case "$v" in low | medium | high | xhigh | max) return 0 ;; esac ;;
+    coordinator_model | worker_model) [[ $v =~ ^[A-Za-z0-9._:-]+$ ]] && return 0 ;;
+    branch_prefix | docs_dir) [[ $v =~ $re ]] && case "$v" in *..* | /*) return 1 ;; *) return 0 ;; esac ;;
+    chat.webhook_env) [ -z "$v" ] || [[ $v =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && return 0 ;;
+    *) return 0 ;;
+  esac
+  return 1
+}
+
+# fc_detect_host REPO -> github | azure-repos | gitlab | bitbucket | unknown
+fc_detect_host() {
+  local url
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) || { echo unknown; return; }
+  case "$url" in
+    *dev.azure.com* | *visualstudio.com*) echo azure-repos ;;
+    *github*) echo github ;;
+    *gitlab*) echo gitlab ;;
+    *bitbucket*) echo bitbucket ;;
+    *) echo unknown ;;
+  esac
+}
+
+# fc_azure_ref REPO -> "org_url<TAB>project<TAB>repository" from the origin URL
+fc_azure_ref() {
+  local url org project repo rest
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
+  url="${url%.git}"
+  case "$url" in
+    *ssh.dev.azure.com:v3/* | *vs-ssh.visualstudio.com:v3/*)
+      rest="${url#*:v3/}"
+      org="${rest%%/*}"; rest="${rest#*/}"
+      project="${rest%%/*}"; repo="${rest#*/}"
+      printf 'https://dev.azure.com/%s\t%s\t%s\n' "$org" "$project" "$repo"
+      ;;
+    *dev.azure.com/*/_git/*)
+      rest="${url#*dev.azure.com/}"
+      org="${rest%%/*}"; rest="${rest#*/}"
+      project="${rest%%/_git/*}"; repo="${rest#*/_git/}"
+      printf 'https://dev.azure.com/%s\t%s\t%s\n' "$org" "$project" "$repo"
+      ;;
+    *.visualstudio.com/*/_git/*)
+      rest="${url#*://}"; rest="${rest#*@}"
+      org="${rest%%.visualstudio.com*}"
+      rest="${rest#*.visualstudio.com/}"; rest="${rest#DefaultCollection/}"
+      project="${rest%%/_git/*}"; repo="${rest#*/_git/}"
+      printf 'https://dev.azure.com/%s\t%s\t%s\n' "$org" "$project" "$repo"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# fc_gitlab_path REPO -> group/subgroup/name
+fc_gitlab_path() {
+  local url
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
+  url="${url%.git}"
+  case "$url" in
+    git@*:*) printf '%s\n' "${url#*:}" ;;
+    ssh://*/*/*) printf '%s\n' "${url#ssh://*/}" ;;
+    https://*/*/* | http://*/*/*) printf '%s\n' "${url#*://*/}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# fc_provider_ref KIND VALUE -> reference file name for a provider (or empty)
+fc_provider_ref() {
+  case "$1:$2" in
+    tracker:azure-boards | host:azure-repos) echo azure-devops.md ;;
+    tracker:jira) echo jira.md ;;
+    tracker:github-issues | host:github) echo github.md ;;
+    tracker:linear) echo linear.md ;;
+    tracker:gitlab-issues | host:gitlab) echo gitlab.md ;;
+    host:bitbucket) echo bitbucket.md ;;
+    chat:teams) echo teams.md ;;
+    chat:slack) echo slack.md ;;
+    chat:discord) echo discord.md ;;
+    *) echo "" ;;
+  esac
+}
+
+# fc_path_protected REL GLOBS - REL matches one of the comma-separated globs
+# ("**/" also matches at the top level; "*" crosses directories).
+fc_path_protected() {
+  local rel="$1" globs="$2" g list
+  [ -n "$globs" ] || return 1
+  IFS=, read -r -a list < <(printf '%s\n' "$globs")
+  # shellcheck disable=SC2053 # the right-hand side is a glob on purpose
+  for g in ${list[@]+"${list[@]}"}; do
+    g="${g#"${g%%[![:space:]]*}"}"
+    g="${g%"${g##*[![:space:]]}"}"
+    [ -n "$g" ] || continue
+    [[ $rel == $g ]] && return 0
+    case "$g" in '**/'*) [[ $rel == ${g#\*\*/} ]] && return 0 ;; esac
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Git helpers
+# ---------------------------------------------------------------------------
+
+# fc_default_branch REPO - "main", "master", ... (no remote prefix)
+fc_default_branch() {
+  local repo="$1" ref b
+  ref=$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) && {
+    printf '%s\n' "${ref#origin/}"
+    return 0
+  }
+  for b in main master trunk develop; do
+    if git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$b" ||
+      git -C "$repo" show-ref --verify --quiet "refs/heads/$b"; then
+      printf '%s\n' "$b"
+      return 0
+    fi
+  done
+  printf 'main\n'
+}
+
+# fc_github_slug REPO - owner/name from the origin remote, if it is GitHub-like.
+fc_github_slug() {
+  local url slug
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
+  slug="${url%.git}"
+  case "$slug" in
+    git@*:*) slug="${slug#*:}" ;;
+    ssh://*/*/*) slug="${slug#ssh://*/}" ;;
+    https://*/*/* | http://*/*/*) slug="${slug#*://*/}" ;;
+    *) return 1 ;;
+  esac
+  case "$slug" in
+    */*) printf '%s\n' "$slug" ;;
+    *) return 1 ;;
+  esac
+}

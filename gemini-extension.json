@@ -1,0 +1,6 @@
+{
+  "name": "feature-coordinator",
+  "description": "Run one feature across many repositories with a coordinator session and one worker session per repo worktree",
+  "version": "0.1.0",
+  "contextFileName": "GEMINI.md"
+}

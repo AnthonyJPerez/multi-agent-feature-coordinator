@@ -1,0 +1,719 @@
+#!/usr/bin/env bash
+# PreToolUse hook for feature-coordinator: keeps every feature session inside
+# its own worktree.
+#
+# Denies (exit 2, reason on stderr - Claude Code, Copilot CLI and Codex all
+# treat that as "block this tool call"):
+#   - file edits outside this session's worktree that land in another
+#     participant's repository or any other git repository
+#   - a worker editing one of its locked contract files
+#   - shell commands that write into other repositories (redirects, cp/mv/rm,
+#     sed -i, git -C ... commit, cd ../other && git commit, ...)
+#   - force pushes, pushes to the default branch, merging or approving PRs
+#   - "feature-workspace unlock" and "finish --force", which are your human
+#     partner's calls
+#
+# Everything else passes through to the harness's own permission system. This
+# is a guardrail against mistakes, not a sandbox; the harness sandbox (Codex
+# workspace-write, Claude Code sandbox mode) is the isolation boundary.
+#
+# Fails open: any unexpected error exits 0 so a bug never wedges a session.
+
+# shellcheck disable=SC2154 # st is assigned inside the trap
+trap 'st=$?; [ "$st" -eq 2 ] || exit 0' EXIT
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+LIB="${PLUGIN_ROOT}/skills/coordinating-multi-repo-features/scripts/fc-lib"
+[ -r "$LIB" ] || exit 0
+# shellcheck source=../skills/coordinating-multi-repo-features/scripts/fc-lib
+. "$LIB" || exit 0
+
+[ "${FC_GUARD:-on}" = off ] && exit 0
+
+PAYLOAD=$(cat 2>/dev/null)
+[ -n "$PAYLOAD" ] || exit 0
+
+payload_cwd=$(fc_json_get "$PAYLOAD" cwd 2>/dev/null) || payload_cwd=""
+# Identity comes from where the session was launched, not where its shell has
+# wandered: the launcher exports FC_SESSION_WORKTREE; Claude Code exports
+# CLAUDE_PROJECT_DIR.
+IDENTITY_DIR="${FC_SESSION_WORKTREE:-${CLAUDE_PROJECT_DIR:-${payload_cwd:-$PWD}}}"
+case "$IDENTITY_DIR" in */.worktrees/*) ;; *) exit 0 ;; esac
+fc_feature_context "$IDENTITY_DIR" || exit 0
+
+OWN="$FC_TOPLEVEL"
+STATE=$(fc_canon "$FC_STATE")
+FC_CFG_PROTECTED_PATHS=""
+fc_read_env "$FC_STATE/config.env" 2>/dev/null || true
+PROTECTED="$FC_CFG_PROTECTED_PATHS"
+BASE_DIR=$(fc_canon "${payload_cwd:-$OWN}")
+WORKSPACE=$(dirname "$(dirname "$STATE")")
+HOME_CANON=$(fc_canon "${HOME:-/nonexistent}")
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+deny() {
+  printf 'feature-coordinator worktree guard: %s\n' "$1" >&2
+  printf 'This session is %s for feature %s and edits only %s.\n' \
+    "$(if [ "$FC_ROLE" = anchor ]; then printf 'the coordinator'; else printf 'the worker for %s' "$FC_REPO"; fi)" \
+    "$FC_ID" "$OWN" >&2
+  if [ -n "${2:-}" ]; then printf '%s\n' "$2" >&2; fi
+  exit 2
+}
+
+mail_hint() {
+  if [ "$FC_ROLE" = anchor ]; then
+    printf 'To change another repo, message its worker: bash %s mail %s send --from coordinator --to <repo> --subject "..." --body "..."' "$FC_SCRIPT" "$FC_ID"
+  else
+    printf 'If another repo needs a change, message the coordinator: bash %s mail %s send --from %s --to coordinator --subject "..." --body "..."' "$FC_SCRIPT" "$FC_ID" "$FC_WHO"
+  fi
+}
+
+# inside_repo PATH -> prints the root of the git repository containing PATH
+inside_repo() {
+  local d="$1"
+  while [ ! -d "$d" ]; do d="${d%/*}"; [ -n "$d" ] || d=/; done
+  while :; do
+    [ "$d" = "$HOME_CANON" ] && return 1
+    if [ -e "$d/.git" ]; then printf '%s\n' "$d"; return 0; fi
+    [ "$d" = / ] && return 1
+    d="${d%/*}"
+    [ -n "$d" ] || d=/
+  done
+}
+
+# ask_human REASON - Tier 3 path: Claude Code asks your human partner in its
+# permission prompt; harnesses without an "ask" decision deny with the reason.
+ask_human() {
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ] && [ -z "${CURSOR_PLUGIN_ROOT:-}" ]; then
+    printf '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": "%s"}}\n' \
+      "$(fc_json_escape "feature-coordinator: $1 Tier 3 - your human partner decides.")"
+    exit 0
+  fi
+  deny "$1" "This is a Tier 3 path for your team: stop and ask your human partner. They can make or approve the change themselves."
+}
+
+# judge PATH WHAT - deny when PATH may not be written by this session
+judge() {
+  local raw="$1" what="$2" p shown rel target blob who main wt repo
+  [ -n "$raw" ] || return 0
+  case "$raw" in /dev/* | -) return 0 ;; esac
+  raw="${raw//\$\{HOME\}/$HOME}"
+  raw="${raw//\$HOME/$HOME}"
+  raw="${raw//\$\{PWD\}/$BASE_DIR}"
+  raw="${raw//\$PWD/$BASE_DIR}"
+  case "$raw" in *'$'* | *'`'*) return 0 ;; esac
+  p=$(fc_canon "$raw" "$BASE_DIR")
+  shown="${p%/.fc-probe}"
+  if fc_is_within "$p" "$OWN"; then
+    rel="${p#"$OWN"/}"
+    if [ -n "$PROTECTED" ] && fc_path_protected "$rel" "$PROTECTED"; then
+      ask_human "$what $rel matches protected_paths ($PROTECTED)."
+    fi
+    [ "$FC_ROLE" = worker ] || return 0
+    while IFS=$'\t' read -r target blob; do
+      [ -n "$target" ] || continue
+      if [ "$rel" = "$target" ] && ! fc_is_unlocked "$FC_STATE" "$FC_WHO" "$target"; then
+        deny "$what $rel: it is a locked contract file (the merged plan fixes it)." \
+          "Changing a contract is a cross-service ripple: stop, tell the coordinator, and let your human partner decide. $(mail_hint)"
+      fi
+    done < <(fc_lock_rows "$FC_STATE" "$FC_WHO")
+    return 0
+  fi
+  fc_is_within "$p" "$STATE" && return 0
+  while IFS=$'\t' read -r who repo _ main wt _; do
+    [ -n "$who" ] || continue
+    if fc_is_within "$p" "$wt" || fc_is_within "$p" "$main"; then
+      deny "$what $shown: that is in $repo's repository, outside this session's worktree." "$(mail_hint)"
+    fi
+  done <"$FC_STATE/repos.tsv"
+  # Other repositories in the feature's workspace are off limits too; scratch
+  # repositories elsewhere (temp directories, ...) are not this hook's business.
+  if repo=$(inside_repo "$p") && fc_is_within "$repo" "$WORKSPACE"; then
+    deny "$what $shown: that is inside another git repository ($repo)." "$(mail_hint)"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# shell command analysis
+# ---------------------------------------------------------------------------
+
+TOKS=()
+SUBCMDS=()
+BQ='`'
+tw=""
+tw_in=0
+hd_wait=0
+hd_delim=""
+hd_strip=0
+tok_flush() {
+  if [ "$tw_in" = 1 ]; then
+    TOKS[${#TOKS[@]}]="$tw"
+    if [ "$hd_wait" = 1 ]; then
+      hd_delim="$tw"
+      hd_wait=0
+    fi
+  fi
+  tw=""
+  tw_in=0
+}
+
+# tokenize CMD - words and operators into TOKS (";" separates commands, ">"
+# marks the next word as a write target, "<" an input to skip). Works line by
+# line so here-document bodies are skipped without being scanned, and scans
+# runs of ordinary characters in one step: bash substring access is linear, so
+# a per-character loop over a long command would be quadratic.
+# $(...) and backticks become opaque words; their bodies go to SUBCMDS.
+q=""
+cont=0
+tokenize() {
+  local s="$1" line chk
+  TOKS=()
+  tw=""
+  tw_in=0
+  hd_wait=0
+  hd_delim=""
+  hd_strip=0
+  q=""
+  cont=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ -n "$hd_delim" ] && [ -z "$q" ]; then
+      chk="$line"
+      [ "$hd_strip" = 1 ] && chk="${chk#"${chk%%[!$'\t']*}"}"
+      if [ "$chk" = "$hd_delim" ]; then
+        hd_delim=""
+        hd_strip=0
+      fi
+      continue
+    fi
+    tokenize_line "$line"
+    if [ -n "$q" ]; then
+      tw="$tw"$'\n'
+    elif [ "$cont" = 1 ]; then
+      cont=0
+    else
+      tok_flush
+      TOKS[${#TOKS[@]}]=";"
+    fi
+  done < <(printf '%s\n' "$s")
+  tok_flush
+}
+
+tokenize_line() {
+  local s="$1" i=0 n=${#1} c nx depth start part chunk
+  while [ "$i" -lt "$n" ]; do
+    if [ "$q" = "'" ]; then
+      part="${s:i}"
+      if [[ "$part" == *"'"* ]]; then
+        part="${part%%"'"*}"
+        tw="$tw$part"
+        i=$((i + ${#part} + 1))
+        q=""
+        continue
+      fi
+      tw="$tw$part"
+      return 0
+    fi
+    if [ "$q" = '"' ]; then
+      part="${s:i}"
+      chunk="${part%%[\"\\]*}"
+      tw="$tw$chunk"
+      i=$((i + ${#chunk}))
+      [ "$i" -lt "$n" ] || return 0
+      if [ "${s:i:1}" = '\' ]; then
+        tw="$tw${s:i+1:1}"
+        i=$((i + 2))
+      else
+        q=""
+        i=$((i + 1))
+      fi
+      continue
+    fi
+    part="${s:i}"
+    chunk="${part%%[\'\"\\\$\`$' \t;|&()<>']*}"
+    if [ -n "$chunk" ]; then
+      tw="$tw$chunk"
+      tw_in=1
+      i=$((i + ${#chunk}))
+      continue
+    fi
+    c="${s:i:1}"
+    nx="${s:i+1:1}"
+    case "$c" in
+      "'" | '"')
+        q="$c"
+        tw_in=1
+        ;;
+      '\')
+        if [ $((i + 1)) -ge "$n" ]; then
+          cont=1
+          return 0
+        fi
+        i=$((i + 1))
+        tw="$tw${s:i:1}"
+        tw_in=1
+        ;;
+      '$' | "$BQ")
+        if [ "$c" = "$BQ" ] || [ "$nx" = '(' ]; then
+          if [ "$c" = "$BQ" ]; then
+            part="${s:i+1}"
+            part="${part%%"$BQ"*}"
+            SUBCMDS[${#SUBCMDS[@]}]="$part"
+            tw="$tw$BQ$part$BQ"
+            i=$((i + ${#part} + 2))
+          else
+            depth=0
+            start=$((i + 2))
+            i=$((i + 1))
+            while [ "$i" -lt "$n" ]; do
+              part="${s:i}"
+              chunk="${part%%[()]*}"
+              i=$((i + ${#chunk}))
+              [ "$i" -lt "$n" ] || break
+              if [ "${s:i:1}" = '(' ]; then
+                depth=$((depth + 1))
+              else
+                depth=$((depth - 1))
+                [ "$depth" -eq 0 ] && break
+              fi
+              i=$((i + 1))
+            done
+            part="${s:start:i-start}"
+            SUBCMDS[${#SUBCMDS[@]}]="$part"
+            tw="$tw\$($part)"
+            i=$((i + 1))
+          fi
+          tw_in=1
+          continue
+        fi
+        tw="$tw$c"
+        tw_in=1
+        ;;
+      ' ' | $'\t')
+        tok_flush
+        ;;
+      ';' | '(' | ')' | '|')
+        tok_flush
+        TOKS[${#TOKS[@]}]=";"
+        ;;
+      '&')
+        if [ "$nx" = '>' ]; then
+          tok_flush
+          i=$((i + 2))
+          [ "${s:i:1}" = '>' ] && i=$((i + 1))
+          TOKS[${#TOKS[@]}]=">"
+          continue
+        fi
+        tok_flush
+        TOKS[${#TOKS[@]}]=";"
+        ;;
+      '>')
+        case "$tw" in
+          '' | *[!0-9]*) tok_flush ;;
+          *) tw="" tw_in=0 ;;
+        esac
+        i=$((i + 1))
+        case "${s:i:1}" in
+          '>' | '|') i=$((i + 1)) ;;
+          '&')
+            i=$((i + 1))
+            if [[ "${s:i:1}" == [0-9-] ]]; then
+              while [[ "${s:i:1}" == [0-9-] ]]; do i=$((i + 1)); done
+              continue
+            fi
+            ;;
+        esac
+        TOKS[${#TOKS[@]}]=">"
+        continue
+        ;;
+      '<')
+        case "$tw" in
+          '' | *[!0-9]*) tok_flush ;;
+          *) tw="" tw_in=0 ;;
+        esac
+        if [ "$nx" = '<' ] && [ "${s:i+2:1}" != '<' ]; then
+          hd_wait=1
+          [ "${s:i+2:1}" = '-' ] && hd_strip=1
+        fi
+        while [ "${s:i+1:1}" = '<' ] || [ "${s:i+1:1}" = '&' ] || [ "${s:i+1:1}" = '-' ]; do i=$((i + 1)); done
+        if [ "${s:i+1:1}" = '>' ]; then
+          i=$((i + 2))
+          TOKS[${#TOKS[@]}]=">"
+          continue
+        fi
+        TOKS[${#TOKS[@]}]="<"
+        ;;
+    esac
+    i=$((i + 1))
+  done
+}
+
+DEPTH=0
+CURDIR=""
+
+is_default_branch() {  # NAME REPO_DIR
+  local b="$1" repo="$2" def
+  b="${b#refs/heads/}"
+  case "$b" in main | master | trunk | develop) return 0 ;; esac
+  def=$(fc_default_branch "$repo" 2>/dev/null) || return 1
+  [ "$b" = "$def" ]
+}
+
+git_write_sub() {  # SUBCOMMAND ARGS... -> 0 when it changes the repository
+  local sub="$1" a pos=0
+  shift
+  case "$sub" in
+    status | log | diff | show | blame | grep | ls-files | ls-tree | ls-remote | rev-parse | rev-list | \
+      describe | cat-file | fetch | show-ref | for-each-ref | merge-base | shortlog | name-rev | \
+      cherry | range-diff | whatchanged | check-ignore | check-attr | var | help | version | count-objects | \
+      fsck | reflog | difftool | annotate | verify-commit | verify-tag | archive | bundle)
+      return 1 ;;
+    branch | tag)
+      for a in "$@"; do
+        case "$a" in
+          -a | -r | -l | --list | -v | -vv | --verbose | --show-current | --all | --remotes | -n* | \
+            --contains* | --no-contains* | --merged* | --no-merged* | --format* | --sort* | --points-at* | \
+            --column* | --no-column | --color* | --no-color | --abbrev* | --ignore-case | -i) ;;
+          -*) return 0 ;;
+          *) pos=$((pos + 1)) ;;
+        esac
+      done
+      [ "$pos" -gt 0 ] && return 0
+      return 1 ;;
+    worktree) [ "${1:-}" = list ] && return 1; return 0 ;;
+    stash) case "${1:-}" in list | show) return 1 ;; esac; return 0 ;;
+    remote) case "${1:-}" in '' | -v | --verbose | show | get-url) return 1 ;; esac; return 0 ;;
+    notes) case "${1:-}" in list | show | '') return 1 ;; esac; return 0 ;;
+    config)
+      for a in "$@"; do
+        case "$a" in
+          --get* | --list | -l | --show-origin | --show-scope | --name-only | -z | --null | --global | \
+            --system | --local | --worktree | --file=* | -f | --type=* | --bool | --int | --path) ;;
+          -*) return 0 ;;
+          *) pos=$((pos + 1)) ;;
+        esac
+      done
+      [ "$pos" -le 1 ] && return 1
+      return 0 ;;
+    symbolic-ref)
+      for a in "$@"; do case "$a" in -d | --delete) return 0 ;; -*) ;; *) pos=$((pos + 1)) ;; esac; done
+      [ "$pos" -ge 2 ] && return 0
+      return 1 ;;
+    submodule) case "${1:-}" in status | summary | '') return 1 ;; esac; return 0 ;;
+    *) return 0 ;;
+  esac
+}
+
+analyze_push() {  # REPO_DIR ARGS...
+  local repo="$1" a pos=0 dst cur
+  shift
+  for a in "$@"; do
+    case "$a" in
+      --force-with-lease* | --force-if-includes) ;;
+      --force | --mirror | --all) deny "git push $a is not allowed for feature sessions." \
+        "Long-lived feature branches are merged, never rewritten. Ask your human partner if history really must be rewritten." ;;
+      --delete) deny "git push --delete is not allowed for feature sessions." "Ask your human partner to delete remote branches." ;;
+      --*) ;;
+      -*)
+        case "$a" in *f*) deny "git push $a (force) is not allowed for feature sessions." \
+          "Long-lived feature branches are merged, never rewritten." ;; esac
+        case "$a" in *d*) deny "git push $a (delete) is not allowed for feature sessions." ;; esac
+        ;;
+      *)
+        pos=$((pos + 1))
+        [ "$pos" -eq 1 ] && continue
+        case "$a" in +*) deny "git push $a (force refspec) is not allowed for feature sessions." ;; esac
+        dst="${a##*:}"
+        [ "$dst" = HEAD ] && dst=$(git -C "$repo" branch --show-current 2>/dev/null || true)
+        if is_default_branch "$dst" "$repo"; then
+          deny "git push to the default branch ($dst) is not allowed." "Changes reach $dst only through a reviewed pull request that a human merges."
+        fi
+        ;;
+    esac
+  done
+  if [ "$pos" -le 1 ]; then
+    cur=$(git -C "$repo" branch --show-current 2>/dev/null || true)
+    if [ -n "$cur" ] && is_default_branch "$cur" "$repo"; then
+      deny "git push from the default branch ($cur) is not allowed." "Work on the feature branch and open a pull request."
+    fi
+  fi
+}
+
+analyze_git() {  # ARGS... (after "git")
+  local target="$CURDIR" gitdir="${SEG_GIT_DIR:-}" worktree="${SEG_WORK_TREE:-}" sub
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -C) target=$(fc_normpath "${2:-.}" "$target"); shift 2 ;;
+      --git-dir=*) gitdir="${1#--git-dir=}"; shift ;;
+      --git-dir) gitdir="${2:-}"; shift 2 ;;
+      --work-tree=*) worktree="${1#--work-tree=}"; shift ;;
+      --work-tree) worktree="${2:-}"; shift 2 ;;
+      -c | --namespace | --exec-path) shift 2 ;;
+      -*) shift ;;
+      *) break ;;
+    esac
+  done
+  sub="${1:-}"
+  [ -n "$sub" ] || return 0
+  shift
+  if git_write_sub "$sub" "$@"; then
+    [ -n "$gitdir" ] && judge "$(fc_normpath "$gitdir" "$target")" "git $sub in"
+    [ -n "$worktree" ] && judge "$(fc_normpath "$worktree" "$target")" "git $sub in"
+    judge "$target/.fc-probe" "git $sub in"
+  fi
+  [ "$sub" = push ] && analyze_push "$target" "$@"
+  return 0
+}
+
+analyze_gh() {
+  local a joined=" $* "
+  case "${1:-} ${2:-}" in
+    "pr merge") deny "gh pr merge: merging pull requests is your human partner's call." "Mark the PR ready and tell your human partner it is ready to merge." ;;
+    "pr review")
+      case "$joined" in *" --approve "* | *" -a "*) deny "gh pr review --approve: an agent approval never counts." "Reviews need a human approver." ;; esac ;;
+    "api "*)
+      case "$joined" in
+        */merge*) case "$joined" in *" -X PUT "* | *" --method PUT "* | *" -XPUT "*) deny "gh api ... /merge: merging pull requests is your human partner's call." ;; esac ;;
+      esac
+      for a in "$@"; do case "$a" in */pulls/*/merge) deny "gh api $a: merging pull requests is your human partner's call." ;; esac; done ;;
+  esac
+  return 0
+}
+
+analyze_az() {
+  local joined=" $* "
+  case "${1:-} ${2:-} ${3:-}" in
+    "repos pr update")
+      case "$joined" in
+        *" --status completed "* | *" --status=completed "*) deny "az repos pr update --status completed: completing (merging) a pull request is your human partner's call." ;;
+        *" --auto-complete true "* | *" --auto-complete=true "*) deny "az repos pr update --auto-complete: setting a PR to merge itself is your human partner's call." ;;
+      esac ;;
+    "repos pr set-vote")
+      case "$joined" in
+        *" --vote approve"*) deny "az repos pr set-vote --vote approve: an agent approval never counts." "Reviews need a human approver." ;;
+      esac ;;
+    "repos pr create")
+      case "$joined" in
+        *" --auto-complete true "* | *" --auto-complete=true "*) deny "az repos pr create --auto-complete: setting a PR to merge itself is your human partner's call." ;;
+      esac ;;
+  esac
+  return 0
+}
+
+analyze_glab() {
+  case "${1:-} ${2:-}" in
+    "mr merge") deny "glab mr merge: merging merge requests is your human partner's call." ;;
+    "mr approve") deny "glab mr approve: an agent approval never counts." "Reviews need a human approver." ;;
+  esac
+  return 0
+}
+
+analyze_fw() {  # ARGS after the feature-workspace script
+  local a sub="" force=0
+  for a in "$@"; do
+    case "$a" in
+      --workspace | --workspace=*) ;;
+      --force) force=1 ;;
+      -*) ;;
+      *) [ -n "$sub" ] || sub="$a" ;;
+    esac
+  done
+  case "$sub" in
+    unlock) deny "feature-workspace unlock: unlocking a contract is your human partner's decision." \
+      "Explain the ripple to your human partner (and the coordinator); they run unlock themselves." ;;
+    finish) [ "$force" = 1 ] && deny "feature-workspace finish --force discards unmerged work." "Ask your human partner to run it." ;;
+  esac
+  return 0
+}
+
+# analyze_segment WORD... - one simple command
+analyze_segment() {
+  local words=("$@") args=() w i=0 n cmd base next_target=0 skip_next=0 last="" opt_t=""
+  SEG_GIT_DIR=""
+  SEG_WORK_TREE=""
+  for w in ${words[@]+"${words[@]}"}; do
+    if [ "$next_target" = 1 ]; then judge "$w" "writing to"; next_target=0; continue; fi
+    if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
+    case "$w" in
+      '>') next_target=1 ;;
+      '<') skip_next=1 ;;
+      *) args[${#args[@]}]="$w" ;;
+    esac
+  done
+  n=${#args[@]}
+  while [ "$i" -lt "$n" ]; do
+    w="${args[i]}"
+    case "$w" in
+      GIT_DIR=*) SEG_GIT_DIR="${w#GIT_DIR=}" ;;
+      GIT_WORK_TREE=*) SEG_WORK_TREE="${w#GIT_WORK_TREE=}" ;;
+      [A-Za-z_]*=*) ;;
+      sudo | command | builtin | exec | nohup | time | nice | env | xargs | '!' | '{' | '}' | then | do | else | \
+        if | while | until | elif | fi | done | -*) ;;
+      *) break ;;
+    esac
+    i=$((i + 1))
+  done
+  [ "$i" -lt "$n" ] || return 0
+  cmd="${args[i]}"
+  base="${cmd##*/}"
+  set -- ${args[@]+"${args[@]:i+1}"}
+  case "$base" in
+    cd | pushd)
+      case "${1:-}" in
+        '' | '~') CURDIR="$HOME" ;;
+        -*) ;;
+        *) CURDIR=$(fc_normpath "$1" "$CURDIR") ;;
+      esac ;;
+    git) analyze_git "$@" ;;
+    gh) analyze_gh "$@" ;;
+    az) analyze_az "$@" ;;
+    glab) analyze_glab "$@" ;;
+    feature-workspace) analyze_fw "$@" ;;
+    bash | sh | zsh | dash | ksh)
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -*c*) [ "$DEPTH" -lt 3 ] && [ -n "${2:-}" ] && analyze_command "$2"; return 0 ;;
+          -*) shift ;;
+          *) case "${1##*/}" in feature-workspace) shift; analyze_fw "$@" ;; esac; return 0 ;;
+        esac
+      done ;;
+    rm | rmdir | unlink | shred | touch | mkdir | truncate | chmod | chown | chgrp)
+      for w in "$@"; do case "$w" in -*) ;; *) judge "$w" "$base" ;; esac; done ;;
+    tee)
+      for w in "$@"; do case "$w" in -*) ;; *) judge "$w" "writing to" ;; esac; done ;;
+    cp | mv | install | ln | rsync | scp)
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -t | --target-directory) opt_t="${2:-}"; shift 2; continue ;;
+          --target-directory=*) opt_t="${1#*=}" ;;
+          -*) ;;
+          *)
+            [ -n "$last" ] && [ "$base" = mv ] && judge "$last" "moving"
+            last="$1" ;;
+        esac
+        shift
+      done
+      if [ -n "$opt_t" ]; then
+        judge "$opt_t/.fc-probe" "$base into"
+        [ -n "$last" ] && [ "$base" = mv ] && judge "$last" "moving"
+      elif [ -n "$last" ]; then
+        judge "$last" "$base to"
+      fi ;;
+    sed | perl | ruby)
+      local inplace=0 script_seen=0 explicit_script=0 skip=0
+      for w in "$@"; do case "$w" in -i* | -*i | --in-place*) inplace=1 ;; -e | --expression* | -f) explicit_script=1 ;; esac; done
+      [ "$inplace" = 1 ] || return 0
+      for w in "$@"; do
+        if [ "$skip" = 1 ]; then skip=0; continue; fi
+        case "$w" in
+          -e | -f) skip=1 ;;
+          -*) ;;
+          *)
+            if [ "$explicit_script" = 0 ] && [ "$script_seen" = 0 ]; then script_seen=1; continue; fi
+            judge "$w" "$base -i on" ;;
+        esac
+      done ;;
+    dd)
+      for w in "$@"; do case "$w" in of=*) judge "${w#of=}" "dd to" ;; esac; done ;;
+  esac
+  return 0
+}
+
+analyze_command() {  # CMD
+  local cmd="$1" seg=() t subs saved_toks
+  DEPTH=$((DEPTH + 1))
+  SUBCMDS=()
+  tokenize "$cmd"
+  subs=(${SUBCMDS[@]+"${SUBCMDS[@]}"})
+  saved_toks=(${TOKS[@]+"${TOKS[@]}"})
+  for t in ${saved_toks[@]+"${saved_toks[@]}"} ";"; do
+    if [ "$t" = ";" ]; then
+      [ "${#seg[@]}" -gt 0 ] && analyze_segment "${seg[@]}"
+      seg=()
+    else
+      seg[${#seg[@]}]="$t"
+    fi
+  done
+  if [ "$DEPTH" -lt 3 ]; then
+    for t in ${subs[@]+"${subs[@]}"}; do analyze_command "$t"; done
+  fi
+  DEPTH=$((DEPTH - 1))
+}
+
+# ---------------------------------------------------------------------------
+# dispatch on the tool
+# ---------------------------------------------------------------------------
+
+tool=$(fc_json_get "$PAYLOAD" tool_name 2>/dev/null) || tool=$(fc_json_get "$PAYLOAD" toolName 2>/dev/null) || tool=""
+tool=$(lower "$tool")
+[ -n "$tool" ] || exit 0
+
+ARGS="$PAYLOAD"
+if targs=$(fc_json_get "$PAYLOAD" toolArgs 2>/dev/null); then
+  ARGS="$targs"
+fi
+
+# json_values KEY - the string value of KEY, or the strings of an array value
+# joined by spaces, NUL-terminated. First occurrence only: walking to later
+# occurrences with ${var#*"$match"} is quadratic on large payloads.
+json_values() {
+  local key="$1" re v arr
+  if v=$(fc_json_get "$ARGS" "$key"); then
+    printf '%s\0' "$v"
+    return 0
+  fi
+  re="\"${key}\"[[:space:]]*:[[:space:]]*\\[(([^]\"]|\"([^\"\\\\]|\\\\.)*\")*)\\]"
+  if [[ $ARGS =~ $re ]]; then
+    arr="${BASH_REMATCH[1]}"
+    re='^[^"]*"(([^"\\]|\\.)*)"(.*)$'
+    v=""
+    while [[ $arr =~ $re ]]; do
+      # Re-quote each element so argument boundaries survive the join.
+      v="$v '$(fc_json_unescape "${BASH_REMATCH[1]}" | sed "s/'/'\\\\''/g")'"
+      arr="${BASH_REMATCH[3]}"
+    done
+    printf '%s\0' "${v# }"
+  fi
+  return 0
+}
+
+patch_paths() {  # PATCH TEXT -> one path per line
+  printf '%s\n' "$1" | sed -n -e 's/^\*\*\* \(Add\|Update\|Delete\) File: //p' -e 's/^\*\*\* Move to: //p'
+}
+
+check_patch_text() {
+  local text="$1" p
+  case "$text" in *'*** '*'File: '*) ;; *) return 0 ;; esac
+  while IFS= read -r p; do
+    p="${p%$'\r'}"
+    [ -n "$p" ] && judge "$p" "patching"
+  done < <(patch_paths "$text")
+}
+
+case "$tool" in
+  edit | write | multiedit | notebookedit | create | str_replace_editor | str_replace_based_edit_tool | \
+    write_file | edit_file | create_file | replace | str_replace | insert | apply_patch | applypatch | patch)
+    if [ "$tool" = str_replace_editor ] || [ "$tool" = str_replace_based_edit_tool ]; then
+      sub=$(json_values command | tr '\0' '\n' | head -n 1)
+      [ "$sub" = view ] && exit 0
+    fi
+    for key in file_path notebook_path path filePath target_file; do
+      while IFS= read -r -d '' v; do judge "$v" "editing"; done < <(json_values "$key")
+    done
+    for key in input patch command; do
+      while IFS= read -r -d '' v; do check_patch_text "$v"; done < <(json_values "$key")
+    done
+    ;;
+  bash | shell | run_shell_command | powershell | exec_command | local_shell | terminal | run_in_terminal | shell_command)
+    CURDIR="$BASE_DIR"
+    while IFS= read -r -d '' v; do
+      check_patch_text "$v"
+      CURDIR="$BASE_DIR"
+      analyze_command "$v"
+    done < <(json_values command; json_values cmd)
+    ;;
+esac
+
+exit 0
