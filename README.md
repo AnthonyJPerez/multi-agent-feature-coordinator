@@ -26,54 +26,155 @@ in the web client and a schema change in the repository that holds your API
 specs. Those repositories may sit on different git hosts and belong to
 different teams.
 
-Coding agents are at their best inside one repository. Stretch them across
-several and the same problems show up:
+### What we want
 
-- **One session can't hold every repository.** Load five repositories into
-  one conversation and the agent runs out of context. It also works without
-  each repository's own instructions, hooks and test commands.
-- **Parallel agents drift apart.** Give each repository its own agent and
-  each one guesses at the interface between them. The billing service expects
-  `amount_cents`, the web client sends `amount`, both test suites pass, and
-  the feature breaks once both pull requests merge.
-- **Agents change what they don't own.** A session edits a sibling
-  repository, writes into a main checkout or pushes to the default branch.
-- **Order matters, and nobody owns it.** The API change has to ship before
-  the client that calls it, and new behavior has to switch on in sequence.
-  Merge out of order and production runs half a feature.
-- **Review becomes the bottleneck.** Every repository produces a pull
-  request, every review produces more changes, and an agent that applies
-  every comment can quietly undo the spec.
-- **Decisions get lost.** Agents make many small choices nobody asked for,
-  and by review time nobody remembers why.
+1. **One engineer, one feature, many repositories.** You describe the feature
+   once, and agents build it in every repository it touches, in parallel.
+2. **Each change fits its repository.** It follows that repository's own
+   instructions, conventions, hooks and tests, and its own code owners
+   review it.
+3. **The pieces fit together.** Every repository implements the same
+   interface, byte for byte, so the parts work once they merge.
+4. **People make the calls that matter.** The spec, the plan, contract
+   changes, approvals, merges and rollout stay with people, and agents ask
+   instead of guessing.
+5. **Review converges.** Reviewers can comment early, feedback is weighed
+   instead of applied blindly, and no pull request bounces between reviewer
+   and agent indefinitely.
+6. **Nothing is hidden.** Every choice an agent made on its own is written
+   down where reviewers see it.
+7. **It runs where the code is.** On engineers' machines, under their own
+   credentials, with repositories on any git host.
+
+### What gets in the way
+
+Published guidance on building agents describes the quality and fidelity
+problems that stand between today's coding agents and those goals:
+
+- **Context rot.** A model recalls what is in its context less accurately as
+  the context grows ([Anthropic, *Effective context engineering*][context]),
+  and Claude Code's best practices start from the same constraint ([Claude
+  Code best practices][bp]). One session holding five repositories sees each
+  of them less clearly.
+- **The telephone game.** When agents hand work to each other, detail gets
+  lost "with each handoff degrading fidelity" ([Anthropic, *When to fold
+  subagents*][fold]). A worker that builds from someone's summary of the plan
+  drifts from the plan.
+- **Conflicting implicit decisions.** "Actions carry implicit decisions, and
+  conflicting decisions carry bad results" ([Cognition, *Don't Build
+  Multi-Agents*][cognition]). Across repositories, that is a billing service
+  that expects `amount_cents` and a web client that sends `amount`: both test
+  suites pass, and the feature breaks once both merge. Work with many
+  dependencies between agents is a poor fit for multi-agent systems
+  ([Anthropic, *Multi-agent research system*][research]), and the choices
+  agents make on their own are invisible unless someone writes them down.
+- **Subagents don't belong in other repositories.** A Claude Code subagent
+  "starts in the main conversation's current working directory" and cannot
+  ask you questions ([Claude Code subagents docs][subagents]). Sent into a
+  sibling repository, it works without that repository's setup and guesses
+  where it should ask.
+- **Instructions are advisory.** "Stay in your repository" and "never merge"
+  written in a prompt hold most of the time. Hooks, by contrast, "are
+  deterministic and guarantee the action happens" ([Claude Code best
+  practices][bp]).
+- **"Looks done" isn't done.** Without a check it can run, an agent stops
+  when the work looks done; the typical result is "a plausible-looking
+  implementation that doesn't handle edge cases" ([Claude Code best
+  practices][bp]).
+- **Review that never ends.** Anthropic's Claude Code team saw one pull
+  request go through more than fifty rounds of review and fixes overnight
+  ([Anthropic, *How the Claude Code team does code review*][review]), and a
+  reviewer asked to find gaps "will usually report some" ([Claude Code best
+  practices][bp]). Multiply that by one pull request per repository.
+- **Order.** The API change has to merge before the client that calls it,
+  and new behavior has to switch on in sequence. Out of order, production
+  runs half a feature.
 
 ## The approach
 
 feature-coordinator runs the feature the way a tech lead runs a small team:
 one plan, one owner per repository, agreed interfaces, and a person who signs
-off on every step.
+off on every step. Each design choice answers one or more of the problems
+above.
 
-| Problem | What feature-coordinator does |
-|---|---|
-| One session can't hold every repository | A **coordinator** session in an *anchor* repository (where your specs live) plans the feature. Each repository gets its own **worker** session in its own git worktree, with that repository's instructions, hooks and test commands. Workers run in parallel. |
-| Parallel agents drift apart | The plan carries the exact contract files: OpenAPI, protobuf, event schemas. Once the plan's pull request merges, `feature-workspace lock` pins each contract to its **git blob id**, so every worker builds against the same bytes. Changing a contract takes a new plan pull request, and only you can unlock one. |
-| Agents change what they don't own | A **guard hook** keeps each session inside its own worktree and blocks force pushes, pushes to the default branch, merges and approvals. |
-| Order matters | The plan sets the merge order as numbered steps. Every pull request stays a **draft** until its step comes; then the coordinator marks it ready, which tells reviewers it is next to merge. Agents can't merge: **you** merge each step. The plan also decides whether to use feature flags and whether each one starts on or off; you change them in the order it sets. |
-| Review becomes the bottleneck | Each worker opens its draft pull request as soon as it starts, so reviewers can comment while the work happens. A **stop gate** sends a worker back to work while its contract check or tests fail. Each worker **triages** review threads instead of applying every comment, sends changes that affect other repositories through the coordinator, and after three rounds stops to propose a different approach. |
-| Decisions get lost | Every push carries a **decision block** that lists the choices the agent made on its own, and a decision log keeps them for the whole feature. |
-
-The sessions coordinate through plain files instead of chat summaries: the
-merged plan, the locked contracts, a mailbox between sessions and the
-decision log. Any harness can read them, they survive restarts, and you can
-inspect them at any time. Hooks enforce the rules in Claude Code and Copilot
-CLI; [What is enforced, and how](#what-is-enforced-and-how) shows the
-coverage in each harness.
+1. **Split the work by repository, not by role.** A coordinator session plans
+   the feature in the *anchor* repository (where your specs live); every
+   other repository gets one full worker session in its own git worktree, and
+   the workers run in parallel. Anthropic's guidance is to divide agents by
+   context, giving each "a piece of work that needs little from the rest of
+   the system", and otherwise to keep one loop with skills, which
+   "frequently outperformed" subagent designs ([*When to fold
+   subagents*][fold]). A repository whose interfaces are locked is that kind
+   of piece. A full session, unlike a subagent, starts in its own repository,
+   loads that repository's instructions and hooks, and can ask you directly.
+2. **Pass documents, not summaries.** Workers read the merged spec, the plan
+   and the locked contract files themselves; sessions talk through a mailbox
+   and a decision log on disk. Anthropic's research system has subagents
+   "store their work in external systems, then pass lightweight references
+   back" to avoid the telephone game ([*Multi-agent research
+   system*][research]), and its context guidance keeps notes outside the
+   context window ([*Effective context engineering*][context]).
+3. **Settle shared decisions before parallel work starts.** A spec pull
+   request, then a plan pull request with the exact contract files (OpenAPI,
+   protobuf, event schemas), each repository's acceptance tests, the merge
+   order and the rollout. When the plan merges, `feature-workspace lock` pins
+   every contract to its git blob id, so every worker builds against the same
+   bytes, and changing one takes a new plan pull request. This is "explore
+   first, then plan, then code" ([Claude Code best practices][bp]) across
+   repositories, and Cognition's first principle, share context, made
+   concrete: the decisions every worker depends on are made once, in writing
+   ([*Don't Build Multi-Agents*][cognition]).
+4. **Enforce the rules that must always hold.** A guard hook keeps each
+   session inside its worktree and blocks force pushes, pushes to the default
+   branch, merges, approvals and edits to locked contracts. A stop gate runs
+   the contract check and the repository's tests before a worker may stop.
+   These are hooks rather than instructions because hooks are deterministic
+   ([Claude Code best practices][bp]). [What is enforced, and
+   how](#what-is-enforced-and-how) shows the coverage in each harness.
+5. **Verify with evidence and fresh eyes.** Workers prove their slice with the
+   plan's acceptance tests, save the evidence, and have a reviewer with a
+   fresh context check the diff before they report it complete. Claude Code's
+   best practices call for a check the agent can run, evidence instead of
+   claims, and review in a fresh context "since Claude won't be biased toward
+   code it just wrote" ([Claude Code best practices][bp]).
+6. **Make review converge.** Workers sort review threads into buckets instead
+   of applying every comment, send changes that affect other repositories
+   through the coordinator, ask for re-review of the new diff only, and after
+   three rounds stop to propose a different approach. These are the
+   convergence rules of Anthropic's own code review, which cut the mean
+   number of reviews a pull request needs to pass from 2.08 to 1.32 ([*How
+   the Claude Code team does code review*][review]).
+7. **Keep people on the decisions, and make every decision visible.** Pull
+   requests open as drafts so people can comment while the work happens; one
+   becomes ready only when its step in the merge order comes. Agents never
+   merge, approve or unlock, and feature flags and rollout follow the plan.
+   Every push carries a decision block listing the choices the agent made on
+   its own, and a decision log keeps them for the whole feature. As in
+   Anthropic's review process, an agent's approval never counts as a
+   person's ([*How the Claude Code team does code review*][review]).
+8. **Use the simplest shape that works.** Parallel sessions only across
+   repositories, skills instead of extra agents inside each one, and bounded
+   autonomy within each phase. Anthropic's advice is to "start with the
+   simplest pattern ... that could work" ([*When to fold subagents*][fold]),
+   and multi-agent systems use about 15 times the tokens of a chat
+   ([*Multi-agent research system*][research]), so every extra session has to
+   earn its cost. One per repository does, because that is where the work is
+   independent.
 
 Every agent session runs on your machine under your own credentials, and
 cloud agents and services stay off unless you turn them on. The skills keep
 the feature's work item current in your tracker (Azure Boards, Jira, GitHub
 Issues, Linear or GitLab Issues) and post to your team chat (Teams, Slack or
-Discord) only when you ask.
+Discord) only when you ask. The research behind these choices and the
+requirements they trace to are in [docs/architecture.md](docs/architecture.md).
+
+[context]: https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
+[fold]: https://claude.com/blog/building-agents-when-to-fold-subagents-into-your-main-agent-loop
+[research]: https://www.anthropic.com/engineering/multi-agent-research-system
+[review]: https://claude.dev/blog/solving-code-review-at-anthropic/
+[bp]: https://code.claude.com/docs/en/best-practices
+[subagents]: https://code.claude.com/docs/en/subagents
+[cognition]: https://cognition.com/blog/dont-build-multi-agents
 
 ## How a feature runs
 
@@ -88,8 +189,7 @@ Discord) only when you ask.
 | 7. Finish | A docs pull request records the decisions and the test proof; `feature-workspace finish` cleans up | Merge |
 
 Inside a phase the agents work on their own, within the limits you set; the
-phase ends when you make the call. The design and the research behind it are
-in [docs/architecture.md](docs/architecture.md).
+phase ends when you make the call.
 
 ## When to use it
 
