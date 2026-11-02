@@ -28,6 +28,9 @@ pushed back on, and loop until merge.
   (provider reference H3), with the file and line each one points at.
 - Note the review round: how many times this PR has been through review and
   fix.
+- Drafts get comments too: reviewers can comment from the moment a draft
+  opens. Triage them as they arrive, between tasks; do not wait for the PR to
+  be marked ready.
 - With superpowers installed, its receiving-code-review skill governs how you
   weigh each comment technically; this skill adds the buckets, ripples and
   multi-repo rules.
@@ -54,8 +57,11 @@ before changing anything beyond the Small bucket.
 - **Small:** one commit per comment or per bug class. If the comment points
   at a class of bug, fix every instance in the diff and say so.
 - **Large as a sub-PR:** branch `<prefix><ID>--sub-<slug>` from the feature
-  branch, open the PR with the feature branch as its base (H6), link it from
-  the thread. It is squash-merged into the feature branch later.
+  branch, open it as a draft with the feature branch as its base (H6), link
+  it from the thread. When it is complete, mark it ready yourself (H7): it
+  merges into your feature branch, not the default branch, so the plan's
+  merge order does not apply. It is squash-merged into the feature branch
+  later.
 - Run the gate and the relevant tests before pushing (verifying-with-proof).
 - Push, then reply on each thread (H4) using `reply-templates.md`: what you
   did, the commit SHA, and the decision block for anything you chose.

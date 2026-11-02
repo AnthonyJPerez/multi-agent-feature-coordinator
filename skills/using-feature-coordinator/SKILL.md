@@ -39,7 +39,7 @@ apply to ordinary single-repo work - for that, carry on as usual.
 | You are about to claim something works | verifying-with-proof |
 | Your human partner asks for status or what happened while away | briefing-your-human-partner |
 | Your human partner asks to involve the wider team | asking-the-team |
-| PRs are approved or merged; rollout; cleanup | finishing-a-multi-repo-feature |
+| PRs are complete and wait for their merge step, or are approved or merged; rollout; cleanup | finishing-a-multi-repo-feature |
 
 ## Hard rules
 
@@ -49,7 +49,8 @@ apply to ordinary single-repo work - for that, carry on as usual.
 2. **The merged plan is the contract.** Locked contract files change only
    through a plan amendment that your human partner approves.
 3. **Humans merge and approve.** Never merge a PR, approve one, or set one to
-   merge itself. An agent's approval never counts.
+   merge itself. An agent's approval never counts. PRs open as drafts; only
+   the coordinator marks one ready, when its merge step comes.
 4. **Triage review feedback; never apply it wholesale.** No `/pr fix
    feedback`, no `/pr auto`, no "address all comments".
 5. **Every push carries its decisions.** See recording-decisions.

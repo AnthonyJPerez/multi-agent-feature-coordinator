@@ -60,7 +60,8 @@ the spec with you."
 3. Ask your human partner to request reviewers: the people who own the
    behavior, plus each affected service's code owners if they want an early
    look.
-4. Mark it ready when your human partner says so (H7).
+4. Mark it ready (H7) when your human partner says the spec is complete.
+   Until then it stays a draft that reviewers can comment on.
 
 **Gate:** your human partner approves and merges the spec PR. Review
 comments go through triaging-pr-feedback like any other PR.

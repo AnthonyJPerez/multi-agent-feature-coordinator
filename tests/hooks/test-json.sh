@@ -66,4 +66,11 @@ check_array "guard-shaped payload, guard's keys" "$GP" "$GUARD_KEYS" "bash^-lc^t
 check_array "guard's keys, short payload" '{"cwd":"/w","tool_name":"shell","tool_input":{"command":["a","b"]}}' "$GUARD_KEYS" "a^b"
 printf '  awk: %s\n' "$(awk --version 2>&1 | head -n 1)"
 
+section "GitLab merge request lines"
+mr='[{"id":11,"iid":7,"project_id":2,"title":"PAY-42: web","description":"says \"draft\": true and \"state\": \"merged\" in text","state":"opened","author":{"id":3,"state":"active"},"draft":true},{"id":9,"iid":5,"state":"closed","draft":false}]'
+assert_eq "newest MR, draft" "$(fc_gitlab_mr_line "$mr")" "!7 opened draft"
+assert_eq "ready MR" "$(fc_gitlab_mr_line '[{"id":12,"iid":8,"state":"opened","draft":false}]')" "!8 opened"
+assert_eq "merged MR" "$(fc_gitlab_mr_line '[{"iid": 9, "state": "merged", "draft": false}]')" "!9 merged"
+assert_eq "no MR" "$(fc_gitlab_mr_line '[]')" "none"
+
 finish_tests

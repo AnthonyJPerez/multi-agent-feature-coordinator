@@ -7,8 +7,8 @@ the same; review happens through a **review packet** your human partner reads
 locally, and your human partner merges.
 
 `fw status` reports these repos from git and the packet: "no commits yet",
-"N commit(s), no review packet", "review packet, N commit(s)" or "merged into
-<default branch>".
+"N commit(s), no review packet", "review packet (draft), N commit(s)" (the
+packet's status), or "merged into <default branch>".
 
 ## Code host actions
 
@@ -47,8 +47,10 @@ it `Resolved` in the comments file then.
 feature branch, its own packet `<state>/reviews/<repo>--sub-<slug>.md`.
 Your human partner merges it into the feature branch.
 
-**H7 - ready for review:** change the packet's first line to
-`Status: ready for review` and tell your human partner.
+**H7 - ready for review, or back to draft:** change the packet's first line
+to `Status: ready for review` and tell your human partner; `Status: draft`
+returns it to draft. Like any other PR, a packet leaves draft only when its
+merge step comes.
 
 **H8 - approval rules:** there are none to configure; your human partner is
 the approver. For cross-service changes, suggest a second human reads the

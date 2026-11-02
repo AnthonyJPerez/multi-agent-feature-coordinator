@@ -126,7 +126,7 @@ its provider supports and says plainly when one is not available.
 | H4 | Reply in a thread, or comment on the PR |
 | H5 | Resolve a thread |
 | H6 | Open a stacked sub-PR (base = the feature branch) |
-| H7 | Mark a draft PR ready for review |
+| H7 | Mark a draft PR ready for review (active), or turn it back into a draft |
 | H8 | Approval rules the team should enable (settings, not commands) |
 | H9 | Where the PR template file lives |
 
@@ -144,6 +144,10 @@ its provider supports and says plainly when one is not available.
 - Never merge, approve, complete, or set auto-complete or auto-merge. The
   guard hook blocks the common commands; the rule covers every other route
   too (web APIs, MCP tools).
+- Every PR opens as a draft (H1), so people can comment while the work is in
+  progress. The coordinator marks a feature PR ready (H7) only when its merge
+  step in the plan comes; a worker may mark its own stacked sub-PRs ready. A
+  ready PR that needs a large change goes back to draft (H7).
 - Write PR bodies, replies and message payloads to files under
   `.feature/<ID>/` (the `<state>` folder), never into a worktree, so they
   cannot end up in a commit.

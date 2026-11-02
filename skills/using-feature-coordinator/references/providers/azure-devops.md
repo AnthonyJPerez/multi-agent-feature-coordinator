@@ -70,7 +70,19 @@ REST reference give the current names. New top-level comment: POST to
 then `az repos pr create ... --source-branch "<prefix><ID>--sub-<slug>"
 --target-branch "<prefix><ID>" --draft true`.
 
-**H7 - ready for review:** `az repos pr update --id <pr> --draft false`
+**H7 - publish (draft to active), or back to draft**
+
+```bash
+az repos pr update --id <pr> --draft false   # publish: the PR becomes active
+az repos pr update --id <pr> --draft true    # back to draft; removes existing votes
+```
+
+While a PR is a draft, Azure DevOps does not run build validation policies
+automatically, disables voting and does not add required reviewers;
+publishing assigns the required reviewers, evaluates the policies and opens
+voting. To get CI results on a draft, queue the build validation yourself:
+`az repos pr policy list --id <pr>` lists the evaluation ids and
+`az repos pr policy queue --id <pr> --evaluation-id <id>` runs one.
 
 **H8 - approval rules** (Project settings > Repositories > Policies on the
 default branch; an admin sets them):

@@ -49,7 +49,8 @@ glab api --method PUT "projects/:fullpath/merge_requests/<iid>/discussions/<disc
 `glab mr create --draft --source-branch "<prefix><ID>--sub-<slug>"
 --target-branch "<prefix><ID>" ...`.
 
-**H7 - ready for review:** `glab mr update <iid> --ready`
+**H7 - ready, or back to draft:** `glab mr update <iid> --ready`; back to
+draft with `glab mr update <iid> --draft`.
 
 **H8 - approval rules** (Settings > Merge requests; Premium for some):
 

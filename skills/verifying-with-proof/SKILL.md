@@ -1,6 +1,6 @@
 ---
 name: verifying-with-proof
-description: Use when about to claim a repository slice or a whole multi-repo feature works, before opening or marking a PR ready, or when reviewers ask for evidence
+description: Use when about to claim a repository slice or a whole multi-repo feature works, before reporting a slice complete or marking a PR ready, or when reviewers ask for evidence
 ---
 
 # Verifying With Proof

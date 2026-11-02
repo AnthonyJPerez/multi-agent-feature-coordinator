@@ -12,6 +12,10 @@
 | 2 | {{repo}} | `{{prefix}}{{ID}}` | #1 | 2 | `{{flag}}` |
 | D | {{anchor}} | `{{prefix}}{{ID}}-docs` | all | last | - |
 
+Merge order is a step number. PRs that share a step merge in any order; a
+step starts when every PR in the earlier steps has merged. Every PR is a
+draft until its step comes, then the coordinator marks it ready.
+
 ## Compatibility Rule
 
 Expand, then contract. Each PR is safe to merge before the PRs after it:

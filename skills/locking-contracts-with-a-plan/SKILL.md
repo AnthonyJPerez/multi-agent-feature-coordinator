@@ -34,7 +34,9 @@ Copy `plan-template.md` (this skill's folder) to
 `<docs_dir>/<ID>/plan.md` and fill in:
 
 1. **PR matrix** - every PR the feature needs (code PRs per repo, docs PR,
-   any migration PR), its dependencies, and the merge order.
+   any migration PR), its dependencies, and its merge step. PRs that share a
+   step can merge in any order; a step starts only when every PR in the
+   earlier steps has merged. Each PR stays a draft until its step comes.
 2. **One section per repository** - what changes, which files or modules,
    the acceptance tests that prove it (each tied to a spec criterion), and
    the gate command if the team config does not already set one.
@@ -87,7 +89,9 @@ Fix the Important findings; mention the rest to your human partner.
 2. List each affected repository's code owners in the PR description and ask
    your human partner to request them as reviewers. The code host cannot
    request owners of other repositories automatically.
-3. **Gate:** those owners approve and your human partner merges.
+3. Mark it ready (H7) when your human partner says the plan is complete.
+   Until then it stays a draft that reviewers can comment on.
+4. **Gate:** those owners approve and your human partner merges.
 
 ## Lock
 

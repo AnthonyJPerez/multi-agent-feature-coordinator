@@ -5,6 +5,7 @@
 - Feature: <ID> - <work item link>
 - Plan: <link to plan.md section for this repo>
 - Depends on: <PRs that must merge first, or "none">
+- Merge step: <N> in the plan (a draft until the earlier steps have merged)
 
 ## Assumptions & Autonomous Decisions
 

@@ -58,9 +58,10 @@ macOS default), so the same files run on macOS, Linux and Git for Windows.
 | Start | worktrees, `.feature/<ID>/`, work item in progress | - |
 | Spec | Spec PR in the anchor repo | approve + merge |
 | Plan | Plan PR with PR matrix, acceptance tests, rollout, contract copies | code owners approve, engineer merges; `lock` |
-| Code wave | one PR per repo | per-PR review |
-| Review | triaged threads, sub-PRs | approvals per commit |
-| Merge | plan order, flags off | engineer merges each |
+| Code wave | one draft PR per repo, opened as soon as its contracts are applied | comments on the drafts at any time |
+| Review | triaged threads, sub-PRs | approvals per commit, once a PR is ready |
+| Ready | the coordinator marks the current merge step's complete PRs ready | - |
+| Merge | plan order, step by step, flags off | engineer merges each |
 | Rollout | flags in plan order | engineer flips each |
 | Finish | docs PR (decisions, proof index), cleanup | merge |
 
@@ -68,6 +69,24 @@ Inside a phase the agents run autonomously within the budget the engineer
 set (`/goal` in Claude Code, Autopilot caps in Copilot). An opt-in milestone
 runner lets the coordinator advance through the PR matrix when the
 deterministic gates hold - it still never merges.
+
+## Drafts and merge order
+
+Every PR opens as a draft and stays one until its merge step in the plan
+comes. Drafts let reviewers comment while the work is in progress, and the
+worker triages those comments as they arrive, so review starts early instead
+of piling up at the end. Ready (Azure DevOps: active) means "this is next to
+merge": the coordinator marks a PR ready only when every PR in the earlier
+steps has merged and the worker has reported it complete. PRs that share a
+step can be ready together. A ready PR that needs a large change goes back
+to draft. Workers never mark their own feature PR ready; they may mark their
+stacked sub-PRs ready, since those merge into the feature branch.
+
+This matches how the hosts treat drafts: GitHub requests code owners and
+Azure DevOps adds required reviewers and opens voting only when a draft
+becomes ready, so approvals are asked for in merge order. Who marks a PR
+ready is a skill rule; `fw status` shows each PR's draft or ready state on
+GitHub, Azure DevOps, GitLab and review packets.
 
 ## Contract lock design
 
@@ -117,8 +136,9 @@ and Mercurial repos can join through git bridges.
 ## Requirements traceability
 
 R1-R25 are the requirements extracted from the original design discussion;
-R26 and R27 are later steers: technologies must be configurable, and the
-plugin runs locally across repos on any mix of git hosts.
+R26-R28 are later steers: technologies must be configurable, the plugin runs
+locally across repos on any mix of git hosts, and PRs stay drafts until
+their turn in the merge order.
 
 | R | Requirement (short) | Satisfied by | Enforcement |
 |---|---|---|---|
@@ -145,6 +165,7 @@ plugin runs locally across repos on any mix of git hosts.
 | R25 | Easy install and version checks | Marketplaces, `bump-version.sh --check`, `claude plugin validate` | Script |
 | R26 | Configurable tracker, code host, chat, conventions | `.feature-coordinator.conf`, provider references | Config + script |
 | R27 | Local-first, with repos on any mix of git hosts, including custom servers and local-only repos | Per-repo code host (detection + `code_host.<repo>`), references for GitHub, Azure DevOps (Services/Server), GitLab, Bitbucket, Gerrit, Gitea, and a review-packet flow for repos without pull requests | Config + script; guard rules per host |
+| R28 | PRs open as drafts so people can comment early and agents answer; only the PRs next in the merge order are ready (active) | Draft PR at the first push (H1), comment triage on drafts, coordinator marks the current merge step ready (H7) and returns reworked PRs to draft; draft state in `fw status` | Skills + host draft semantics; status in script |
 
 ## Parity
 

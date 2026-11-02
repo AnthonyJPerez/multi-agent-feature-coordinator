@@ -530,6 +530,21 @@ fc_gitlab_path() {
   esac
 }
 
+# fc_gitlab_mr_line JSON -> "!<iid> <state>[ draft]" for the newest merge
+# request in `glab mr list -F json` output, or "none". The first "iid",
+# "state" and "draft" keys in the array belong to the newest MR (nested
+# objects such as the author come after the MR's own state).
+fc_gitlab_mr_line() {
+  local out="$1" n st d
+  n=$(printf '%s' "$out" | grep -o '"iid": *[0-9]*' | head -n 1 | tr -dc '0-9' || true)
+  [ -n "$n" ] || { printf 'none'; return 0; }
+  st=$(printf '%s' "$out" | grep -o '"state": *"[a-z_]*"' | head -n 1 | sed 's/.*"\([a-z_]*\)"$/\1/' || true)
+  d=$(printf '%s' "$out" | grep -o '"draft": *[a-z]*' | head -n 1 | sed 's/.*: *//' || true)
+  printf '!%s %s' "$n" "$st"
+  if [ "$d" = true ]; then printf ' draft'; fi
+  return 0
+}
+
 # fc_provider_ref KIND VALUE -> reference file name for a provider (or empty)
 fc_provider_ref() {
   case "$1:$2" in
