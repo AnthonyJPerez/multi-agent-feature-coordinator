@@ -275,7 +275,8 @@ fc_json_escape() {
 #   2. <workspace>/.feature/config          (this engineer's machine)
 #   3. <anchor repo>/.feature-coordinator.conf  (committed, shared by the team)
 #   4. defaults below
-# Files use "key = value" lines; "#" starts a comment line.
+# Files use "key = value" lines; "#" starts a comment, at the start of a line
+# or after whitespace in an unquoted value.
 # ---------------------------------------------------------------------------
 
 FC_CONF_FILE=".feature-coordinator.conf"
@@ -291,6 +292,11 @@ fc_conf_get() {
     k="${BASH_REMATCH[1]}"
     v="${BASH_REMATCH[2]}"
     [ "$k" = "$key" ] || continue
+    # An unquoted value ends at " #": the rest of the line is a comment.
+    case "$v" in
+      \"* | \'*) ;;
+      *[[:space:]]#*) v="${v%%[[:space:]]#*}" ;;
+    esac
     v="${v%"${v##*[![:space:]]}"}"
     case "$v" in
       \"*\") v="${v#\"}"; v="${v%\"}" ;;
@@ -359,7 +365,7 @@ fc_conf_validate() {
   local key="$1" v="$2" re='^[A-Za-z0-9._/-]+$'
   case "$key" in
     tracker) case "$v" in azure-boards | jira | github-issues | linear | gitlab-issues | none) return 0 ;; esac ;;
-    code_host) case "$v" in auto | github | azure-repos | gitlab | bitbucket) return 0 ;; esac ;;
+    code_host) case "$v" in auto | github | azure-repos | gitlab | bitbucket | gerrit | gitea | local | other) return 0 ;; esac ;;
     chat) case "$v" in teams | slack | discord | none) return 0 ;; esac ;;
     default_cli) case "$v" in claude | copilot | codex) return 0 ;; esac ;;
     effort) case "$v" in low | medium | high | xhigh | max) return 0 ;; esac ;;
@@ -372,15 +378,22 @@ fc_conf_validate() {
 }
 
 # fc_detect_host REPO -> github | azure-repos | gitlab | bitbucket | unknown
+# Repositories in one feature may live on different hosts, or nowhere: a repo
+# with no origin, or one whose origin is a path, is "local"; a git server this
+# plugin has no reference for is "other". Hosts on custom domains that cannot
+# be recognised are set per repo with code_host.<repo> in the config.
 fc_detect_host() {
   local url
-  url=$(git -C "$1" remote get-url origin 2>/dev/null) || { echo unknown; return; }
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) || { echo local; return; }
   case "$url" in
-    *dev.azure.com* | *visualstudio.com*) echo azure-repos ;;
+    /* | ./* | ../* | '~'* | file://* | [A-Za-z]:[\\/]*) echo local ;;
+    *dev.azure.com* | *visualstudio.com* | */_git/*) echo azure-repos ;;
     *github*) echo github ;;
     *gitlab*) echo gitlab ;;
     *bitbucket*) echo bitbucket ;;
-    *) echo unknown ;;
+    *:29418/* | *gerrit*) echo gerrit ;;
+    *gitea* | *forgejo* | *codeberg.org*) echo gitea ;;
+    *) echo other ;;
   esac
 }
 
@@ -409,6 +422,16 @@ fc_azure_ref() {
       project="${rest%%/_git/*}"; repo="${rest#*/_git/}"
       printf 'https://dev.azure.com/%s\t%s\t%s\n' "$org" "$project" "$repo"
       ;;
+    http://*/_git/* | https://*/_git/*)
+      # Azure DevOps Server: https://host[/tfs]/<collection>/<project>/_git/<repo>
+      rest="${url%%/_git/*}"
+      repo="${url#*/_git/}"
+      project="${rest##*/}"
+      org="${rest%/*}"
+      org="${org%%://*}://${org#*://}"
+      case "$org" in *://*@*) org="${org%%://*}://${org#*@}" ;; esac
+      printf '%s\t%s\t%s\n' "$org" "$project" "$repo"
+      ;;
     *) return 1 ;;
   esac
 }
@@ -435,6 +458,9 @@ fc_provider_ref() {
     tracker:linear) echo linear.md ;;
     tracker:gitlab-issues | host:gitlab) echo gitlab.md ;;
     host:bitbucket) echo bitbucket.md ;;
+    host:gerrit) echo gerrit.md ;;
+    host:gitea) echo gitea.md ;;
+    host:local | host:other | host:unknown) echo local.md ;;
     chat:teams) echo teams.md ;;
     chat:slack) echo slack.md ;;
     chat:discord) echo discord.md ;;

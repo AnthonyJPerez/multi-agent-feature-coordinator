@@ -24,7 +24,8 @@ is `example.feature-coordinator.conf` in this folder.
 | `tracker` | `azure-boards`, `jira`, `github-issues`, `linear`, `gitlab-issues`, `none` | `none` |
 | `tracker.url` | Base URL (Azure DevOps organization, Jira site) | - |
 | `tracker.project` | Project or team key | - |
-| `code_host` | `auto`, `github`, `azure-repos`, `gitlab`, `bitbucket` | `auto` (from each repo's `origin`) |
+| `code_host` | `auto`, `github`, `azure-repos`, `gitlab`, `bitbucket`, `gerrit`, `gitea`, `local`, `other` | `auto` (detected per repo from its `origin`) |
+| `code_host.<repo>` | Same values, for one repo (custom domains, on-prem servers) | - |
 | `chat` | `teams`, `slack`, `discord`, `none` | `none` |
 | `chat.channel` | Channel name or ID, for messages only | - |
 | `chat.webhook_env` | Name of the environment variable holding the webhook URL | - |
@@ -39,7 +40,39 @@ is `example.feature-coordinator.conf` in this folder.
 | `gate.<repo>` | Gate command for one repo | - |
 
 A repository's own `.feature-coordinator.conf` may set `gate = <command>`
-for itself.
+and `code_host = <host>` for itself.
+
+## Repos on different hosts
+
+Every repository in a feature has its own code host, and they may all
+differ: one feature can touch a GitHub repo, an Azure DevOps Server repo on
+the company network, a Gerrit project and a local repo with no remote at all.
+For each repo, the first of these wins:
+
+1. `code_host.<repo>` in `<workspace>/.feature/config`
+2. `code_host.<repo>` in the anchor's `.feature-coordinator.conf`
+3. `code_host` in the repo's own `.feature-coordinator.conf`
+4. a team-wide `code_host` other than `auto`
+5. detection from the repo's `origin` URL:
+
+| origin | host |
+|---|---|
+| none, a folder path, `file://` | `local` |
+| `dev.azure.com`, `*.visualstudio.com`, any URL with `/_git/` (Azure DevOps Server) | `azure-repos` |
+| contains `github` (github.com, GitHub Enterprise Server) | `github` |
+| contains `gitlab` | `gitlab` |
+| contains `bitbucket` | `bitbucket` |
+| port `29418` or contains `gerrit` | `gerrit` |
+| contains `gitea`, `forgejo`, `codeberg.org` | `gitea` |
+| anything else | `other` |
+
+`fw config <ID>` lists each repo's host. Hosts on custom domains
+(`git.acme.internal`) need `code_host.<repo>`.
+
+Only git repositories are supported: worktrees are a git feature. Repos in
+other version control systems (TFVC, Subversion, Perforce, Mercurial) can
+take part through a git bridge such as git-tfs, git-svn or git-p4, with the
+bridge's git repo as the participant.
 
 **Never put secrets in these files.** Webhook URLs and tokens live in
 environment variables; the config only names the variable.
@@ -55,6 +88,9 @@ starts, `fw config <ID>` during one.
 | `code_host = azure-repos`, `tracker = azure-boards` | `azure-devops.md` |
 | `code_host = gitlab`, `tracker = gitlab-issues` | `gitlab.md` |
 | `code_host = bitbucket` | `bitbucket.md` |
+| `code_host = gerrit` | `gerrit.md` |
+| `code_host = gitea` (Gitea, Forgejo, Codeberg) | `gitea.md` |
+| `code_host = local` or `other` (no pull-request system) | `local.md` |
 | `tracker = jira` | `jira.md` |
 | `tracker = linear` | `linear.md` |
 | `chat = teams` | `teams.md` |
@@ -62,8 +98,8 @@ starts, `fw config <ID>` during one.
 | `chat = discord` | `discord.md` |
 
 Mixed stacks are normal (GitHub code with Jira tickets and Teams chat, for
-example): read one reference per role. Each repo's code host is detected
-separately, so one feature can span GitHub and Azure Repos.
+example): read one reference per role, and one code-host reference per host
+your feature touches.
 
 ## Action vocabulary
 

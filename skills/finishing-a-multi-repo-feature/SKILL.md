@@ -36,7 +36,8 @@ The provider reference (H8) says where each setting lives.
 ## 2. Merging (your human partner)
 
 - They merge each PR, in order, flags off. Use the code host's merge queue
-  if the team has one.
+  if the team has one. Repos without a pull-request system are merged from
+  the main checkout (provider reference `local.md`).
 - After each merge, the workers whose PRs come later bring their branch up
   to date by **merging** the default branch (never rebasing), re-run the
   gate and push. Mail them: `fw mail <ID> send --from coordinator --to <repo> --subject "Update from main" ...`.

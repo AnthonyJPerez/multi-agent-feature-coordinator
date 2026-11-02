@@ -66,6 +66,11 @@ reference for it. Inside a feature worktree your session context lists the
 team stack and the reference files; otherwise run the workspace script's
 `config` command, and see `references/providers/README.md`.
 
+Each repository has its own code host, and one feature may mix them: GitHub,
+Azure DevOps, GitLab, Bitbucket, Gerrit, Gitea, a self-hosted server or a
+local repo with no remote. A repo without a pull-request system is reviewed
+through a local review packet (`references/providers/local.md`).
+
 In these skills, `fw` stands for `bash <path>/feature-workspace`, the script
 in the coordinating-multi-repo-features skill's `scripts/` folder. Your
 session context, brief and `fw where` print the absolute path.

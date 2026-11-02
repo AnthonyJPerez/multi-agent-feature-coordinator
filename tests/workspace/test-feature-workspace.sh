@@ -60,7 +60,7 @@ gate_web=$(awk -F '\t' '$1 == "web" { print $7 }' "$STATE/repos.tsv")
 assert_eq "repo-owned gate" "$gate_api" "test -f ok.txt"
 assert_eq "team gate.<repo>" "$gate_web" "true"
 assert_eq "coordinator row first" "$(head -n 1 "$STATE/repos.tsv" | cut -f1)" "coordinator"
-assert_eq "host column for a local remote" "$(awk -F '\t' '$1 == "web" { print $8 }' "$STATE/repos.tsv")" "unknown"
+assert_eq "a remote that is a folder counts as local" "$(awk -F '\t' '$1 == "web" { print $8 }' "$STATE/repos.tsv")" "local"
 assert_contains "prints provider references" "$out" "providers/jira.md"
 assert_contains "prints the slack reference" "$out" "providers/slack.md"
 
@@ -215,6 +215,12 @@ assert_rc "invalid tier rejected" "$rc" 1 "$out"
 
 section "status and list"
 out=$(fw status FEAT-1 --no-remote 2>&1)
+assert_contains "local repo without commits" "$out" "| web | worker | feature/FEAT-1 |"
+assert_contains "local repo: no commits yet" "$(printf '%s\n' "$out" | grep '^| web ')" "no commits yet"
+assert_contains "local repo: commits but no packet" "$(printf '%s\n' "$out" | grep '^| api-svc ')" "1 commit(s), no review packet"
+printf 'Status: draft\n' >"$STATE/reviews/api-svc.md"
+out=$(fw status FEAT-1 --no-remote 2>&1)
+assert_contains "local repo: review packet" "$(printf '%s\n' "$out" | grep '^| api-svc ')" "review packet, 1 commit(s)"
 assert_contains "status lists the coordinator" "$out" "| coordinator | anchor |"
 assert_contains "status lists a worker" "$out" "| api-svc | worker | feature/FEAT-1 |"
 assert_contains "status shows the tracker" "$out" "Tracker: jira"
@@ -226,6 +232,7 @@ assert_rc "finish refuses unmerged work" "$rc" 1 "$out"
 assert_contains "names the unmerged branch" "$out" "api-svc: feature/FEAT-1 has commits that are not merged"
 git -C "$API_WT" push -q -u origin feature/FEAT-1 2>/dev/null
 merge_to_main "$WS/api-svc" feature/FEAT-1
+assert_contains "local repo: merged" "$(fw status FEAT-1 --no-remote 2>&1 | grep '^| api-svc ')" "merged into main"
 out=$(fw finish FEAT-1 2>&1); rc=$?
 assert_rc "finish after merge" "$rc" 0 "$out"
 assert_no_file "worktree removed" "$API_WT"
@@ -235,6 +242,42 @@ assert_eq "branch deleted" "$(git -C "$WS/api-svc" branch --list feature/FEAT-1)
 assert_no_file "state moved" "$STATE"
 assert_contains "state archived" "$(ls "$WS/.feature/_archive")" "FEAT-1-"
 
+
+section "per-repo code hosts"
+WS3=$(make_workspace hosts anchor svc web)
+cd "$WS3" || exit 1
+cat >anchor/.feature-coordinator.conf <<'EOF'
+code_host = auto
+code_host.web = gitlab      # self-managed GitLab on a custom domain
+EOF
+commit_and_push anchor conf .feature-coordinator.conf
+printf 'code_host = gerrit\n' >svc/.feature-coordinator.conf
+commit_and_push svc conf .feature-coordinator.conf
+out=$(fw start H-1 --anchor anchor --repo svc --repo web 2>&1); rc=$?
+assert_rc "start with mixed hosts" "$rc" 0 "$out"
+host_of() { awk -F '\t' -v w="$1" '$1 == w { print $8 }' "$WS3/.feature/H-1/repos.tsv"; }
+assert_eq "code_host.<repo> in the team file (inline comment ignored)" "$(host_of web)" "gitlab"
+assert_eq "a repo's own code_host" "$(host_of svc)" "gerrit"
+assert_eq "detection for the rest" "$(host_of coordinator)" "local"
+assert_contains "references for every host" "$out" "providers/gerrit.md"
+assert_contains "gitlab reference" "$out" "providers/gitlab.md"
+assert_contains "local reference" "$out" "providers/local.md"
+printf 'code_host.web = gitea\n' >"$WS3/.feature/config"
+out=$(fw config H-1 --refresh 2>&1)
+assert_eq "config --refresh re-detects hosts" "$(host_of web)" "gitea"
+printf 'code_host.web = svn\n' >"$WS3/.feature/config"
+out=$(fw config H-1 --refresh 2>&1); rc=$?
+assert_rc "an unknown host is rejected" "$rc" 1 "$out"
+rm -f "$WS3/.feature/config"
+SVC_WT="$WS3/svc/.worktrees/H-1"
+printf 'x\n' >"$SVC_WT/change.txt"
+git -C "$SVC_WT" add change.txt && git -C "$SVC_WT" commit -qm "change"
+sha=$(git -C "$SVC_WT" rev-parse HEAD)
+git -C "$WS3/svc" cherry-pick "$sha" >/dev/null 2>&1
+git -C "$WS3/svc" push -q origin main 2>/dev/null
+out=$(fw finish H-1 2>&1); rc=$?
+assert_rc "a cherry-picked (Gerrit-style) submit counts as merged" "$rc" 0 "$out"
+cd "$WS" || exit 1
 
 section "regressions from review"
 WS2=$(make_workspace regress anchor svc)
@@ -283,11 +326,24 @@ assert_eq "azure ssh" "$(detect adossh)" "azure-repos"
 assert_eq "visualstudio.com" "$(detect vsts)" "azure-repos"
 assert_eq "gitlab" "$(detect gl)" "gitlab"
 assert_eq "bitbucket" "$(detect bb)" "bitbucket"
-assert_eq "unknown host" "$(detect other)" "unknown"
+assert_eq "a git server with no known PR system" "$(detect other)" "other"
+git init -q "$TEST_ROOT/hosts/noremote"
+assert_eq "no remote at all" "$(detect noremote)" "local"
+mk_remote_repo pathremote /srv/git/payments.git
+mk_remote_repo fileurl file:///srv/git/payments.git
+mk_remote_repo tfs https://tfs.contoso.internal/tfs/DefaultCollection/Payments/_git/ledger
+mk_remote_repo gerrit ssh://review.contoso.internal:29418/platform/pricing
+mk_remote_repo codeberg https://codeberg.org/acme/tools.git
+assert_eq "folder remote" "$(detect pathremote)" "local"
+assert_eq "file:// remote" "$(detect fileurl)" "local"
+assert_eq "Azure DevOps Server" "$(detect tfs)" "azure-repos"
+assert_eq "Gerrit on port 29418" "$(detect gerrit)" "gerrit"
+assert_eq "Codeberg" "$(detect codeberg)" "gitea"
 azref() { bash -c '. "$1"; fc_azure_ref "$2"' _ "$FC_LIB" "$TEST_ROOT/hosts/$1"; }
 assert_eq "azure ref (https)" "$(azref ado)" "$(printf 'https://dev.azure.com/contoso\tPayments%%20Team\tbilling')"
 assert_eq "azure ref (ssh)" "$(azref adossh)" "$(printf 'https://dev.azure.com/contoso\tPayments\tbilling')"
 assert_eq "azure ref (visualstudio.com)" "$(azref vsts)" "$(printf 'https://dev.azure.com/contoso\tPayments\tbilling')"
+assert_eq "azure ref (Azure DevOps Server)" "$(azref tfs)" "$(printf 'https://tfs.contoso.internal/tfs/DefaultCollection\tPayments\tledger')"
 assert_eq "gitlab path" "$(bash -c '. "$1"; fc_gitlab_path "$2"' _ "$FC_LIB" "$TEST_ROOT/hosts/gl")" "platform/core/api"
 assert_eq "github slug" "$(bash -c '. "$1"; fc_github_slug "$2"' _ "$FC_LIB" "$TEST_ROOT/hosts/gh")" "acme/payments"
 

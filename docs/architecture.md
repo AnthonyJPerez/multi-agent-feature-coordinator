@@ -86,19 +86,39 @@ and locks their **git blob ids** when the plan PR merges:
 Amendments go through a new plan PR; only the engineer can `unlock` a path
 in the meantime.
 
-## Configurable stack
+## Configurable stack, any git host
 
 The skills speak in actions (T1-T5 tracker, H1-H9 code host, C1-C2 chat).
-`.feature-coordinator.conf` in the anchor repo picks the providers; each
-engineer can override locally; the code host is detected per repo from its
-`origin` URL, so one feature can span GitHub and Azure Repos. The script
-uses the configured host for status and merge checks (`gh`, `az repos`,
-`glab`); the guard knows every supported host's merge and approve commands.
+`.feature-coordinator.conf` in the anchor repo picks the tracker and chat;
+each engineer can override locally.
+
+The code host is a property of **each repository**, not of the team, because
+real features cross hosting boundaries: a service on GitHub, a ledger on an
+on-prem Azure DevOps Server, a pricing engine in Gerrit, a prototype that
+lives only on the engineer's disk. Each repo's host comes from
+`code_host.<repo>`, the repo's own config, a team-wide value, or detection
+from its `origin` URL, and a repo with no remote is `local`. The provider
+reference for each host implements the same action codes; for repos without
+a pull-request system (`local`, `other`), "open a PR" becomes a review packet
+the engineer reads locally, and the engineer merges in the main checkout.
+
+The host matters for three things only: which reference the agent reads,
+how `fw status` reports the PR column (`gh`, `az repos`, `glab`, or git
+plus the review packet), and how `fw finish` decides a branch is merged
+(ancestry, patch equivalence via `git cherry` for rebase and cherry-pick
+submits, then the host's merged state for squash merges). Everything else -
+worktrees, contract lock, mailbox, gates, the guard's confinement and push
+rules - is plain git and works the same everywhere. The guard also knows
+each host's merge and approve commands (CLI and common REST forms).
+
+Repositories must be git, because worktrees are. TFVC, Subversion, Perforce
+and Mercurial repos can join through git bridges.
 
 ## Requirements traceability
 
 R1-R25 are the requirements extracted from the original design discussion;
-R26 is the later steer that technologies must be configurable.
+R26 and R27 are later steers: technologies must be configurable, and the
+plugin runs locally across repos on any mix of git hosts.
 
 | R | Requirement (short) | Satisfied by | Enforcement |
 |---|---|---|---|
@@ -123,7 +143,8 @@ R26 is the later steer that technologies must be configurable.
 | R23 | Follow current agent best practice | Fold by context, progressive disclosure via skills, convergence rules | Architecture |
 | R24 | Claude Code and Copilot parity | Same skills, hooks and script; file mailbox where messaging is missing | Partial (see below) |
 | R25 | Easy install and version checks | Marketplaces, `bump-version.sh --check`, `claude plugin validate` | Script |
-| R26 | Configurable tracker, code host, chat, conventions | `.feature-coordinator.conf`, provider references, per-repo host detection | Config + script |
+| R26 | Configurable tracker, code host, chat, conventions | `.feature-coordinator.conf`, provider references | Config + script |
+| R27 | Local-first, with repos on any mix of git hosts, including custom servers and local-only repos | Per-repo code host (detection + `code_host.<repo>`), references for GitHub, Azure DevOps (Services/Server), GitLab, Bitbucket, Gerrit, Gitea, and a review-packet flow for repos without pull requests | Config + script; guard rules per host |
 
 ## Parity
 

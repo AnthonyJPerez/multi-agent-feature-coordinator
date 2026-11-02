@@ -17,9 +17,13 @@ First release.
   default-branch pushes, merges, approvals and auto-complete on every
   supported host, contract unlocks, protected paths), Stop gate (contract
   check and per-repo gate command, once per worktree state).
+- Local-first, any git host: one feature can mix repos on GitHub, Azure
+  DevOps Services or Server, GitLab, Bitbucket, Gerrit, Gitea/Forgejo, any
+  self-hosted git server and local repos with no remote. The host is
+  detected per repo or set with `code_host.<repo>`; repos without pull
+  requests are reviewed through a local review packet.
 - Configurable stack: Azure Boards, Jira, GitHub Issues, Linear or GitLab
-  Issues; GitHub, Azure Repos, GitLab or Bitbucket (detected per repo);
-  Teams, Slack or Discord; branch prefix, docs folder, gates, models,
-  protected paths.
+  Issues; Teams, Slack or Discord; branch prefix, docs folder, gates,
+  models, protected paths.
 - Manifests for Claude Code, GitHub Copilot CLI, Codex, Cursor and Gemini
   CLI.

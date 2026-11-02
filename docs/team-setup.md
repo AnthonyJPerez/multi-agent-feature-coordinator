@@ -56,11 +56,33 @@ chat = slack
 chat.webhook_env = FC_SLACK_WEBHOOK
 ```
 
-### Mixed hosts
+### Mixed hosts, custom servers and local repos
 
-Leave `code_host = auto`: each repo's host is detected from its `origin`
-URL (`dev.azure.com`/`visualstudio.com`, `github`, `gitlab`, `bitbucket`).
-Set it explicitly for self-hosted hosts with unusual names.
+One feature can span repos on different hosts. Leave `code_host = auto` and
+each repo's host is detected from its `origin` URL; correct the ones
+detection cannot place:
+
+```ini
+code_host = auto
+code_host.ledger = azure-repos       # Azure DevOps Server on a company domain
+code_host.pricing-engine = gerrit    # Gerrit without "gerrit" in its hostname
+code_host.ml-pipeline = gitlab       # self-managed GitLab at git.acme.internal
+code_host.prototypes = local         # no remote; reviewed on this machine
+```
+
+- **Azure DevOps Server (on-prem)**: URLs containing `/_git/` are detected;
+  `az` needs `--org https://<server>/<collection>` for status lookups.
+- **Gerrit**: give the feature ID as the change topic
+  (`refs/for/main%topic=<ID>`) so one query shows the feature's changes in
+  every Gerrit repo.
+- **Repos without pull requests** (`local`, or `other` for a plain git
+  server): work is reviewed through a review packet in
+  `.feature/<ID>/reviews/`, and the engineer merges in the main checkout.
+- A repo can declare its own host in its own `.feature-coordinator.conf`
+  (`code_host = gerrit`), which helps when the same repo joins features
+  anchored in different places.
+- Only git repositories can take part. Bridge others with git-tfs (TFVC),
+  git-svn, git-p4 or git-remote-hg and register the bridged git repo.
 
 ### Gates and models
 

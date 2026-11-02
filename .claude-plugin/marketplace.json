@@ -1,6 +1,6 @@
 {
   "name": "feature-coordinator",
-  "description": "Marketplace for the feature-coordinator plugin",
+  "description": "Marketplace for feature-coordinator: local-first multi-repo feature coordination on any git host",
   "owner": {
     "name": "AJ Perez",
     "url": "https://github.com/AnthonyJPerez"
@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "feature-coordinator",
-      "description": "Run one feature across many repositories with a coordinator session and one worker session per repo worktree",
+      "description": "Local-first coordination of one feature across many git repositories on any host - GitHub, Azure DevOps, GitLab, Bitbucket, Gerrit, Gitea, self-hosted or local: a coordinator session plus one worker session per repo worktree, locked contracts, triaged reviews, visible decisions.",
       "version": "0.1.0",
       "source": "./",
       "author": {

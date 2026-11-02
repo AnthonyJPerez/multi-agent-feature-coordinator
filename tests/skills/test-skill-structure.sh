@@ -48,7 +48,7 @@ apply to ordinary single-repo work"
 
 section "provider references"
 P=using-feature-coordinator/references/providers
-for f in github azure-devops gitlab bitbucket jira linear teams slack discord; do
+for f in github azure-devops gitlab bitbucket gerrit gitea local jira linear teams slack discord; do
   assert_file "provider reference $f" "$P/$f.md"
 done
 while IFS= read -r ref; do

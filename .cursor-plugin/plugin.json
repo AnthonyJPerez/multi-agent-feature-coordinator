@@ -1,7 +1,7 @@
 {
   "name": "feature-coordinator",
   "displayName": "Feature Coordinator",
-  "description": "Run one feature across many repositories with a coordinator session and one worker session per repo worktree",
+  "description": "Local-first coordination of one feature across many git repositories on any host - GitHub, Azure DevOps, GitLab, Bitbucket, Gerrit, Gitea, self-hosted or local: a coordinator session plus one worker session per repo worktree, locked contracts, triaged reviews, visible decisions.",
   "version": "0.1.0",
   "author": {
     "name": "AJ Perez",
@@ -14,7 +14,11 @@
     "multi-repo",
     "worktrees",
     "contracts",
-    "code-review"
+    "code-review",
+    "local-first",
+    "azure-devops",
+    "gerrit",
+    "self-hosted"
   ],
   "skills": "./skills/",
   "hooks": "./hooks/hooks-cursor.json"

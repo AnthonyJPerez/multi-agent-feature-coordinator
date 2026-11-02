@@ -23,6 +23,7 @@ repository.
       mail/<who>/*.md           unread messages; read ones move to read/
       gates/<repo>.*            Stop-gate fingerprints and last log
       proof/<repo>/             verification evidence
+      reviews/<repo>.md         review packets for repos without pull requests
     _archive/<ID>-<stamp>/      state of finished features
   <anchor>/.worktrees/<ID>/     coordinator worktree
   <repo>/.worktrees/<ID>/       worker worktrees
@@ -62,7 +63,7 @@ Tab-separated, coordinator row first:
 | 5 | worktree path |
 | 6 | branch |
 | 7 | gate command (empty: contract check only) |
-| 8 | code host: github, azure-repos, gitlab, bitbucket or unknown |
+| 8 | code host: github, azure-repos, gitlab, bitbucket, gerrit, gitea, local or other |
 
 Gate precedence: `--gate repo=cmd` at start > `gate.<repo>` in
 `<workspace>/.feature/config` > `gate.<repo>` in the anchor's
@@ -94,7 +95,7 @@ only to nudge the recipient to read its mail.
 
 ## Team stack keys
 
-`tracker`, `tracker.url`, `tracker.project`, `code_host`, `chat`,
+`tracker`, `tracker.url`, `tracker.project`, `code_host`, `code_host.<repo>`, `chat`,
 `chat.channel`, `chat.webhook_env`, `branch_prefix`, `docs_dir`,
 `default_cli`, `coordinator_model`, `worker_model`, `model.<repo>`,
 `effort`, `protected_paths`, `gate.<repo>` (anchor or workspace file),

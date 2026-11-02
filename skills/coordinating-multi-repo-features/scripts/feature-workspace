@@ -182,6 +182,32 @@ repo_gate() {
   return 0
 }
 
+# repo_host WS ANCHOR_MAIN REPO_MAIN NAME - code host for one repository
+repo_host() {
+  local ws="$1" anchor="$2" main="$3" name="$4" v=""
+  v=$(fc_conf_get "$ws/.feature/config" "code_host.$name" 2>/dev/null) ||
+    v=$(fc_conf_get "$anchor/$FC_CONF_FILE" "code_host.$name" 2>/dev/null) ||
+    v=$(fc_conf_get "$main/$FC_CONF_FILE" code_host 2>/dev/null) ||
+    v="$FC_CFG_CODE_HOST"
+  fc_conf_validate code_host "$v" || fc_die "invalid code host '$v' for $name"
+  [ "$v" = auto ] && v=$(fc_detect_host "$main")
+  printf '%s\n' "$v"
+}
+
+# refresh_hosts STATE - re-resolve every participant's code host (column 8)
+refresh_hosts() {
+  local state="$1" anchor who main repo host tmp
+  anchor=$(field "$state" coordinator "$FC_COL_MAIN")
+  tmp="$state/repos.tsv.tmp.$$"
+  for who in $(fc_participants "$state"); do
+    main=$(field "$state" "$who" "$FC_COL_MAIN")
+    repo=$(field "$state" "$who" "$FC_COL_REPO")
+    host=$(repo_host "$FC_WORKSPACE" "$anchor" "$main" "$repo") || exit 1
+    awk -F '\t' -v OFS='\t' -v w="$who" -v h="$host" '$1 == w { $8 = h } { print }' \
+      "$state/repos.tsv" >"$tmp" && mv "$tmp" "$state/repos.tsv"
+  done
+}
+
 # resolve_repo NAME_OR_PATH WORKSPACE -> canonical repo root
 resolve_repo() {
   local spec="$1" ws="$2" p top
@@ -354,7 +380,7 @@ cmd_start() {
     fc_read_env "$state/feature.env"
     [ "$FC_ANCHOR" = "$anchor_name" ] || fc_die "feature $id already uses anchor $FC_ANCHOR"
   fi
-  mkdir -p "$state/mail/coordinator" "$state/briefs" "$state/gates" "$state/proof"
+  mkdir -p "$state/mail/coordinator" "$state/briefs" "$state/gates" "$state/proof" "$state/reviews"
   if [ -f "$state/config.env" ]; then
     load_config "$state"
   else
@@ -365,8 +391,7 @@ cmd_start() {
 
   # The anchor (coordinator) worktree starts on <prefix>ID-spec.
   wt=$(setup_worktree "$anchor_main" "$id" "$bp$id-spec" "$base" "$fetch")
-  host="$FC_CFG_CODE_HOST"
-  [ "$host" = auto ] && host=$(fc_detect_host "$anchor_main")
+  host=$(repo_host "$ws" "$anchor_main" "$anchor_main" "$anchor_name")
   write_record "$anchor_main" "$id" "$id" coordinator "$anchor_name" anchor "$state" "$wt" "$bp$id-spec"
   upsert_row "$state" coordinator \
     "$(printf 'coordinator\t%s\tanchor\t%s\t%s\t%s\t\t%s' "$anchor_name" "$anchor_main" "$wt" "$bp$id-spec" "$host")"
@@ -381,8 +406,7 @@ cmd_start() {
     [ -n "$gate" ] || gate=$(field "$state" "$name" "$FC_COL_GATE" 2>/dev/null || true)
     [ -n "$gate" ] || gate=$(repo_gate "$ws" "$anchor_main" "$main" "$name")
     case "$gate" in *$'\t'* | *$'\n'*) fc_die "gate command for $name may not contain tabs or newlines" ;; esac
-    host="$FC_CFG_CODE_HOST"
-    [ "$host" = auto ] && host=$(fc_detect_host "$main")
+    host=$(repo_host "$ws" "$anchor_main" "$main" "$name")
     who="$name"
     wtname="$id"
     [ "$name" = "$anchor_name" ] && wtname="$id-code"
@@ -435,7 +459,8 @@ cmd_config() {
       resolve_config "$FC_WORKSPACE" "$(field "$state" coordinator "$FC_COL_MAIN")"
       FC_CFG_BRANCH_PREFIX="$keep_bp" FC_CFG_DOCS_DIR="$keep_docs"
       write_config_snapshot "$state"
-      printf 'Refreshed the team stack for %s (branch_prefix and docs_dir stay fixed for a running feature).\n\n' "$id"
+      refresh_hosts "$state"
+      printf 'Refreshed the team stack and code hosts for %s (branch_prefix and docs_dir stay fixed for a running feature).\n\n' "$id"
     fi
     load_config "$state"
     printf 'Team stack for %s (snapshot %s/config.env)\n\n' "$id" "$state"
@@ -950,9 +975,10 @@ cmd_log_decision() {
 # code-host adapters (read-only lookups; never merge, never approve)
 # ---------------------------------------------------------------------------
 
-# pr_summary HOST MAIN BRANCH -> "#12 open draft" style text, "none", or "n/a"
+# pr_summary HOST MAIN BRANCH [STATE WHO] -> "#12 open draft" style text,
+# "none", or "n/a"
 pr_summary() {
-  local host="$1" main="$2" branch="$3" ref org project repo path out n st draft
+  local host="$1" main="$2" branch="$3" state="${4:-}" who="${5:-}" ref org project repo path out n st draft default
   case "$host" in
     github)
       command -v gh >/dev/null 2>&1 || { printf 'n/a (no gh)'; return; }
@@ -982,6 +1008,16 @@ pr_summary() {
       n=$(printf '%s' "$out" | grep -o '"iid": *[0-9]*' | head -n 1 | tr -dc '0-9' || true)
       st=$(printf '%s' "$out" | grep -o '"state": *"[a-z_]*"' | head -n 1 | sed 's/.*"\([a-z_]*\)"$/\1/' || true)
       if [ -n "$n" ]; then printf '!%s %s' "$n" "$st"; else printf 'none'; fi
+      ;;
+    local | other)
+      # No pull-request system: the review packet plus what git knows.
+      default=$(fc_default_branch "$main")
+      n=$(git -C "$main" rev-list --count "$default..$branch" 2>/dev/null || printf '?')
+      if [ -n "$state" ] && [ -f "$state/reviews/$who.md" ]; then
+        if [ "$n" = 0 ]; then printf 'merged into %s' "$default"; else printf 'review packet, %s commit(s)' "$n"; fi
+      else
+        if [ "$n" = 0 ]; then printf 'no commits yet'; else printf '%s commit(s), no review packet' "$n"; fi
+      fi
       ;;
     *) printf 'n/a (%s)' "$host" ;;
   esac
@@ -1052,7 +1088,11 @@ cmd_status() {
     if [ "$role" = worker ] && [ -f "$state/contracts.lock" ]; then
       if contract_drift "$state" "$who" >/dev/null; then contracts="ok"; else contracts="DRIFT"; fi
     fi
-    if [ "$remote" = 1 ]; then pr=$(pr_summary "$host" "$main" "${branch:-}"); else pr="-"; fi
+    if [ "$remote" = 1 ] || [ "$host" = local ] || [ "$host" = other ]; then
+      pr=$(pr_summary "$host" "$main" "${branch:-}" "$state" "$who")
+    else
+      pr="-"
+    fi
     unread=$(find "$state/mail/$who" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ' || true)
     printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
       "$who" "$role" "${branch:-detached}" "$head" "$dirty" "$sync" "$contracts" "$pr" "$unread"
@@ -1117,7 +1157,7 @@ cmd_list() {
 
 # branch_is_safe HOST MAIN BRANCH - nothing on BRANCH would be lost
 branch_is_safe() {
-  local host="$1" main="$2" branch="$3" default count
+  local host="$1" main="$2" branch="$3" default count cherry
   git -C "$main" show-ref --verify --quiet "refs/heads/$branch" || return 0
   default=$(fc_default_branch "$main")
   if git -C "$main" rev-parse --verify --quiet "refs/remotes/origin/$default" >/dev/null; then
@@ -1126,7 +1166,15 @@ branch_is_safe() {
     count=$(git -C "$main" rev-list --count "$default..$branch" 2>/dev/null || printf 1)
   fi
   [ "$count" = 0 ] && return 0
-  # Squash and rebase merges leave the branch's own commits unreachable.
+  # Rebase and cherry-pick merges (Gerrit, rebase-merge buttons) leave
+  # patch-equivalent commits upstream: git cherry marks those with "-".
+  if git -C "$main" rev-parse --verify --quiet "refs/remotes/origin/$default" >/dev/null; then
+    cherry=$(git -C "$main" cherry "origin/$default" "$branch" 2>/dev/null || printf '+')
+  else
+    cherry=$(git -C "$main" cherry "$default" "$branch" 2>/dev/null || printf '+')
+  fi
+  case "$cherry" in *+*) ;; *) return 0 ;; esac
+  # Squash merges leave nothing equivalent; ask the code host.
   pr_merged "$host" "$main" "$branch"
 }
 

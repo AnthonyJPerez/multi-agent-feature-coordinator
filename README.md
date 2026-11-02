@@ -1,17 +1,25 @@
 # feature-coordinator
 
-Run one feature across many repositories with coding agents - one
-coordinator session, one worker session per repository worktree, contracts
-locked by a merged plan, review feedback triaged instead of blindly applied,
-and every autonomous decision visible.
+Run one feature across many repositories with coding agents, **locally**, on
+your own machine, **whatever git host each repository lives on**.
 
-It is a plugin in the [obra/superpowers](https://github.com/obra/superpowers)
-style: plain-Markdown skills that work in any agent harness, a bootstrap
-skill injected at session start, small shell hooks, and one manifest per
-ecosystem (Claude Code, GitHub Copilot CLI, Codex, Cursor, Gemini CLI).
-The tracker, code host and team chat are configuration: Azure Boards, Jira,
-GitHub Issues, Linear or GitLab Issues; GitHub, Azure Repos, GitLab or
-Bitbucket; Teams, Slack or Discord.
+- **Local-first.** Every session runs on the engineer's workstation, in a git
+  worktree, under the engineer's own credentials. Nothing runs in the cloud
+  unless you turn it on.
+- **Any git host, mixed in one feature.** GitHub, Azure DevOps (Services or
+  on-prem Server), GitLab, Bitbucket, Gerrit, Gitea/Forgejo, any self-hosted
+  git server, and local repos with no remote at all. Each repo's host is
+  detected from its remote or set in config; repos without pull requests are
+  reviewed through a local review packet.
+- **One session per repository.** A coordinator session plus one worker
+  session per repo worktree; contracts locked by a merged plan; review
+  feedback triaged instead of blindly applied; every autonomous decision
+  visible.
+- **Any agent harness.** A plugin in the
+  [obra/superpowers](https://github.com/obra/superpowers) style for Claude
+  Code, GitHub Copilot CLI, Codex, Cursor and Gemini CLI.
+- **Your tracker and chat.** Azure Boards, Jira, GitHub Issues, Linear or
+  GitLab Issues; Teams, Slack or Discord - all configuration.
 
 ## How it works
 
@@ -46,6 +54,29 @@ Nothing goes to a team channel or a cloud service unless you ask.
 Why this shape, and what the research behind it found:
 [docs/architecture.md](docs/architecture.md).
 
+## Supported code hosts
+
+| Host | Detected from `origin` | `fw status` PR column | Guard blocks merge and approve via | Reference |
+|---|---|---|---|---|
+| GitHub (incl. Enterprise Server) | `github` | `gh` | `gh`, REST | [github.md](skills/using-feature-coordinator/references/providers/github.md) |
+| Azure DevOps Services and Server | `dev.azure.com`, `visualstudio.com`, `/_git/` | `az repos` | `az repos`, `az rest`, REST | [azure-devops.md](skills/using-feature-coordinator/references/providers/azure-devops.md) |
+| GitLab (SaaS or self-managed) | `gitlab` | `glab` | `glab`, REST | [gitlab.md](skills/using-feature-coordinator/references/providers/gitlab.md) |
+| Bitbucket Cloud | `bitbucket` | - | REST | [bitbucket.md](skills/using-feature-coordinator/references/providers/bitbucket.md) |
+| Gerrit | port 29418, `gerrit` | - | `ssh ... gerrit review/submit`, `%submit`, REST | [gerrit.md](skills/using-feature-coordinator/references/providers/gerrit.md) |
+| Gitea, Forgejo, Codeberg | `gitea`, `forgejo`, `codeberg.org` | - | `tea`, REST | [gitea.md](skills/using-feature-coordinator/references/providers/gitea.md) |
+| Self-hosted git without pull requests | anything else (`other`) | review packet + git | pushes to the default branch | [local.md](skills/using-feature-coordinator/references/providers/local.md) |
+| Local repo, no remote | no `origin`, or a folder path | review packet + git | merging in the main checkout | [local.md](skills/using-feature-coordinator/references/providers/local.md) |
+
+Custom domains that detection cannot place get `code_host.<repo> = <host>`
+in the team config. Every host also gets the host-independent protections:
+no force pushes, no pushes to the default branch, no edits outside the
+session's worktree.
+
+Repositories must be git: worktrees are a git feature. Repos in TFVC,
+Subversion, Perforce or Mercurial can join through a git bridge (git-tfs,
+git-svn, git-p4, git-remote-hg), with the bridge's git repo as the
+participant.
+
 ## What is enforced, and how
 
 | Guarantee | Mechanism | Harnesses |
@@ -53,7 +84,7 @@ Why this shape, and what the research behind it found:
 | A session edits only its own worktree | `worktree-guard` PreToolUse hook (file tools and shell commands: redirects, `cp`/`mv`/`rm`, `sed -i`, `git -C`, `cd` into other repos) | Claude Code, Copilot CLI; Codex via `--sandbox workspace-write` |
 | Locked contract files do not change | guard hook on edits + `contract-check` in the Stop gate | Claude Code, Copilot CLI (Codex/Cursor/Gemini: the worker runs the check) |
 | A worker cannot stop with failing checks | `feature-gate` Stop hook runs contract check + the repo's gate command, blocks once per state | Claude Code, Copilot CLI |
-| No force pushes, no pushes to the default branch, no agent merges or approvals | guard hook (`git push --force`, `gh pr merge`, `az repos pr update --status completed`, `glab mr merge`, approvals, auto-complete) | Claude Code, Copilot CLI |
+| No force pushes, no pushes to the default branch, no agent merges or approvals | guard hook (`git push --force`, `gh pr merge`, `az repos pr update --status completed`, `glab mr merge`, `tea pulls merge`, Gerrit submit and +2, REST merge/approve calls, auto-complete) | Claude Code, Copilot CLI |
 | Contract unlocks and forced cleanup are human-only | guard hook denies `feature-workspace unlock` / `finish --force` | Claude Code, Copilot CLI |
 | Tier 3 paths need your OK | `protected_paths` in the team config: Claude Code asks you; others deny with the reason | Claude Code, Copilot CLI |
 | Decisions are visible | recording-decisions skill, PR template, decision log; add the CI check in [docs/team-setup.md](docs/team-setup.md) to make it deterministic | all |
@@ -122,7 +153,8 @@ Commit `.feature-coordinator.conf` to the anchor repo:
 ```ini
 tracker = jira                 # azure-boards | jira | github-issues | linear | gitlab-issues | none
 tracker.url = https://acme.atlassian.net
-code_host = auto               # detected per repo from origin: github | azure-repos | gitlab | bitbucket
+code_host = auto               # per repo from origin; or github | azure-repos | gitlab | bitbucket | gerrit | gitea | local | other
+code_host.ledger = azure-repos # a repo on a custom domain (e.g. Azure DevOps Server)
 chat = teams                   # teams | slack | discord | none
 chat.webhook_env = FC_TEAMS_WEBHOOK
 branch_prefix = feature/

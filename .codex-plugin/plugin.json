@@ -1,7 +1,7 @@
 {
   "name": "feature-coordinator",
   "version": "0.1.0",
-  "description": "Run one feature across many repositories: a coordinator session plus one worker session per repo worktree, locked contracts, triaged reviews and visible decisions.",
+  "description": "Local-first coordination of one feature across many git repositories on any host - GitHub, Azure DevOps, GitLab, Bitbucket, Gerrit, Gitea, self-hosted or local: a coordinator session plus one worker session per repo worktree, locked contracts, triaged reviews, visible decisions.",
   "author": {
     "name": "AJ Perez",
     "url": "https://github.com/AnthonyJPerez"
@@ -14,14 +14,18 @@
     "microservices",
     "worktrees",
     "contracts",
-    "code-review"
+    "code-review",
+    "local-first",
+    "azure-devops",
+    "gerrit",
+    "self-hosted"
   ],
   "skills": "./skills/",
   "hooks": {},
   "interface": {
     "displayName": "Feature Coordinator",
-    "shortDescription": "Coordinate one feature across many repositories",
-    "longDescription": "Plan a cross-repo feature as one spec and one contract-locking plan, run one session per repository worktree, triage review feedback without blind fixes, and keep every autonomous decision visible.",
+    "shortDescription": "Run one feature across many git repos, locally, on any host",
+    "longDescription": "Plan a cross-repo feature as one spec and one contract-locking plan, run one session per repository worktree on your own machine, and mix repos from GitHub, Azure DevOps, GitLab, Bitbucket, Gerrit, Gitea, self-hosted servers and local-only repos. Review feedback is triaged instead of blindly applied, and every autonomous decision stays visible.",
     "developerName": "AJ Perez",
     "category": "Developer Tools",
     "capabilities": [

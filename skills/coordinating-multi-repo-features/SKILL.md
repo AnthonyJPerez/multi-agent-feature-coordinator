@@ -61,10 +61,13 @@ within the budget they set.
    ```
    Re-run with more `--repo` flags to add repos later. Add
    `--gate <repo>=<command>` for a repo whose gate is not in the team config.
-3. Check the team stack: `fw config <ID>`. If the tracker, code host or chat
-   is wrong, stop - your human partner fixes `.feature-coordinator.conf` in
-   the anchor repo (or `<workspace>/.feature/config` for personal overrides)
-   and you run `fw config <ID> --refresh`.
+3. Check the team stack: `fw config <ID>` lists the tracker, the chat and
+   each repo's code host (repos may live on different hosts, or only on this
+   machine). If something is wrong, stop - your human partner fixes
+   `.feature-coordinator.conf` in the anchor repo (or
+   `<workspace>/.feature/config` for personal overrides; `code_host.<repo>`
+   for a repo on a custom domain) and you run `fw config <ID> --refresh`,
+   which also re-detects each repo's host.
 4. If a tracker is configured, read the work item and mark it in progress,
    assigned to your human partner (provider reference: T1, T2).
 5. Your human partner opens this coordinator session with
