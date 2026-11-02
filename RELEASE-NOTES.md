@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Research is a defined step before the spec: one read-only researcher per
+  repository, in parallel, writes a note on how that repository works today
+  and where the feature lands (interfaces, data, tests, owners, flags, risks,
+  open questions, with `path:line`); the coordinator joins the notes into a
+  context map of services and seams. The spec, the plan and each worker's
+  brief start from them.
 - Pull requests open as drafts and stay drafts until their merge step in the
   plan comes. Workers open the draft at their first push, so reviewers can
   comment while the work happens, and triage those comments as they arrive;

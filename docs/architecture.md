@@ -35,6 +35,13 @@ only the anchor), one worker session per repo worktree (its own cwd, hooks,
 instructions, and the ability to ask the engineer), and file-based handoff -
 the merged plan, the contract copies and a mailbox - instead of summaries.
 
+Research before the spec is the one place the coordinator fans out: one
+read-only researcher per repository, in parallel, each in a fresh context,
+writing a note to `.feature/<ID>/research/<repo>.md`. That is a split by
+context (one repository each) rather than by problem type, so it fits the
+guidance; the coordinator joins the notes into a context map of services and
+seams, and the spec, the plan and each worker's brief start from them.
+
 ## Components
 
 | Component | Role |
@@ -56,6 +63,7 @@ macOS default), so the same files run on macOS, Linux and Git for Windows.
 | Phase | Output | Gate (human) |
 |---|---|---|
 | Start | worktrees, `.feature/<ID>/`, work item in progress | - |
+| Research | one note per repository, a context map of services and seams | answers to open questions |
 | Spec | Spec PR in the anchor repo | approve + merge |
 | Plan | Plan PR with PR matrix, acceptance tests, rollout, contract copies | code owners approve, engineer merges; `lock` |
 | Code wave | one draft PR per repo, opened as soon as its contracts are applied | comments on the drafts at any time |
@@ -136,9 +144,10 @@ and Mercurial repos can join through git bridges.
 ## Requirements traceability
 
 R1-R25 are the requirements extracted from the original design discussion;
-R26-R29 are later steers: technologies must be configurable, the plugin runs
+R26-R30 are later steers: technologies must be configurable, the plugin runs
 locally across repos on any mix of git hosts, PRs stay drafts until their
-turn in the merge order, and the plan decides whether to use feature flags.
+turn in the merge order, the plan decides whether to use feature flags, and
+research happens inside each repository before the spec and plan.
 
 | R | Requirement (short) | Satisfied by | Enforcement |
 |---|---|---|---|
@@ -167,6 +176,7 @@ turn in the merge order, and the plan decides whether to use feature flags.
 | R27 | Local-first, with repos on any mix of git hosts, including custom servers and local-only repos | Per-repo code host (detection + `code_host.<repo>`), references for GitHub, Azure DevOps (Services/Server), GitLab, Bitbucket, Gerrit, Gitea, and a review-packet flow for repos without pull requests | Config + script; guard rules per host |
 | R28 | PRs open as drafts so people can comment early and agents answer; only the PRs next in the merge order are ready (active) | Draft PR at the first push (H1), comment triage on drafts, coordinator marks the current merge step ready (H7) and returns reworked PRs to draft; draft state in `fw status` | Skills + host draft semantics; status in script |
 | R29 | Whether to use feature flags, and whether each starts on or off, is decided in the implementation plan | Plan's "Feature Flags and Rollout" section (yes/no, starting state, order, rollback; or a rollout by merge step); finishing follows it | Skills + plan template |
+| R30 | Research is conducted within each repository, and the coordinator combines it across repositories and service contexts for the spec and plan | One read-only research subagent per repo (`research-prompt.md`) writing `.feature/<ID>/research/<repo>.md`; the coordinator's context map; spec, plan and briefs cite the notes | Skills + templates; `start` creates `research/` |
 
 ## Parity
 

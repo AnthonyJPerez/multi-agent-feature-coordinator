@@ -380,7 +380,7 @@ cmd_start() {
     fc_read_env "$state/feature.env"
     [ "$FC_ANCHOR" = "$anchor_name" ] || fc_die "feature $id already uses anchor $FC_ANCHOR"
   fi
-  mkdir -p "$state/mail/coordinator" "$state/briefs" "$state/gates" "$state/proof" "$state/reviews"
+  mkdir -p "$state/mail/coordinator" "$state/briefs" "$state/gates" "$state/proof" "$state/reviews" "$state/research"
   if [ -f "$state/config.env" ]; then
     load_config "$state"
   else

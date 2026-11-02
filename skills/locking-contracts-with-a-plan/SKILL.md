@@ -39,7 +39,9 @@ Copy `plan-template.md` (this skill's folder) to
    earlier steps has merged. Each PR stays a draft until its step comes.
 2. **One section per repository** - what changes, which files or modules,
    the acceptance tests that prove it (each tied to a spec criterion), and
-   the gate command if the team config does not already set one.
+   the gate command if the team config does not already set one. Start from
+   the repository's research note (`.feature/<ID>/research/<repo>.md`): its
+   entry points, tests, owners and flags; check anything that changed since.
 3. **Contracts** - for every contract that crosses a boundary (OpenAPI,
    protobuf, GraphQL, event or message schemas, shared config), the exact
    file as it must exist in the owning repo after the change:

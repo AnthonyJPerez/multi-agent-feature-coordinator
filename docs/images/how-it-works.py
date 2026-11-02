@@ -57,7 +57,7 @@ CHIPS = [
     ("Plan & contracts", "locked by git blob id", True),
     ("Mailbox", "questions and ripples", False),
     ("Decision log", "choices agents made", False),
-    ("Briefs & proof", "per-repo brief, test proof", False),
+    ("Repo research", "notes, briefs, proof", False),
 ]
 
 
@@ -99,8 +99,9 @@ def svg(p):
         text(x + w / 2, y + 16.5, s, size=13, weight=500, fill=color, anchor="middle")
         return w
 
-    label = ("Diagram: on your machine, a coordinator session in the anchor repo writes the plan and "
-             "locked contracts into shared files; one worker session per repository, each in its own "
+    label = ("Diagram: on your machine, a coordinator session in the anchor repo researches every "
+             "repository, then writes the research notes, the plan and the locked contracts into shared "
+             "files; one worker session per repository, each in its own "
              "git worktree with a guard and a stop gate, reads them and works in parallel. Each worker "
              "opens a draft PR on its own repo's host - GitHub, Azure DevOps Server, GitLab, or a review "
              "packet for a local repo with no remote - as soon as it starts. The coordinator marks each "
@@ -139,7 +140,7 @@ def svg(p):
     caps(c["x"] + 18, c["y"] + 27, "COORDINATOR SESSION")
     text(c["x"] + 18, c["y"] + 54, "platform-specs", size=18, weight=700,
          after=[(" (anchor repo)", 15, 400, p["muted"])])
-    text(c["x"] + 18, c["y"] + 79, "spec · plan · dispatch · marks PRs ready in order", size=14.5, fill=p["muted"])
+    text(c["x"] + 18, c["y"] + 79, "research · spec · plan · dispatch · marks PRs ready", size=14.5, fill=p["muted"])
 
     # You -> coordinator
     y = c["y"] + c["h"] // 2
@@ -150,7 +151,7 @@ def svg(p):
     # Coordinator <-> shared files
     mx = c["x"] + c["w"] // 2
     line([(mx, c["y"] + c["h"]), (mx, BAND["y"])], p["arrow"], start=True)
-    text(mx + 14, (c["y"] + c["h"] + BAND["y"]) / 2 + 5, "writes the plan, reads mail", size=14, fill=p["muted"])
+    text(mx + 14, (c["y"] + c["h"] + BAND["y"]) / 2 + 5, "writes research notes and the plan, reads mail", size=14, fill=p["muted"])
 
     # Shared files
     b = BAND

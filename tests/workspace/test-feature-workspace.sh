@@ -54,6 +54,7 @@ assert_eq "worker branch uses the prefix" "$(git -C "$API_WT" branch --show-curr
 assert_file ".worktreeinclude copied" "$API_WT/.env.local"
 assert_contains ".worktrees/ excluded" "$(cat "$WS/api-svc/.git/info/exclude")" ".worktrees/"
 assert_file "per-worktree record" "$WS/api-svc/.git/feature-coordinator/FEAT-1.env"
+assert_file "research folder for the per-repo notes" "$STATE/research"
 assert_contains "config snapshot" "$(cat "$STATE/config.env")" "FC_CFG_TRACKER=jira"
 gate_api=$(awk -F '\t' '$1 == "api-svc" { print $7 }' "$STATE/repos.tsv")
 gate_web=$(awk -F '\t' '$1 == "web" { print $7 }' "$STATE/repos.tsv")
@@ -169,6 +170,7 @@ assert_contains "brief: tracker" "$brief" "**jira**"
 assert_contains "brief: provider reference" "$brief" "providers/jira.md"
 assert_contains "brief: branch" "$brief" "feature/FEAT-1"
 assert_contains "brief: docs folder" "$brief" "$ANCHOR_WT/docs/features/FEAT-1/plan.md"
+assert_contains "brief: research note" "$brief" "$STATE/research/api-svc.md"
 assert_contains "dispatch prints launch commands" "$out" "working-a-repo-slice"
 
 section "apply-contract and contract-check"

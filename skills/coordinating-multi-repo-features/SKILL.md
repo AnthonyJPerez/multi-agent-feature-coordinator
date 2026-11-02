@@ -73,14 +73,30 @@ within the budget they set.
 5. Your human partner opens this coordinator session with
    `fw launch <ID> coordinator` if it is not already running there.
 
-### 2. Research
+### 2. Research every repository
 
-- Read the relevant code in every participating worktree yourself, or
-  dispatch read-only research subagents for broad sweeps. Keep conclusions,
-  not file dumps.
-- Look for open PRs in each repo that touch the same contracts or files
-  (provider reference: H2). **Overlap with another feature is Tier 3**:
-  stop and ask your human partner how to sequence.
+The spec and the plan are only as good as what you know about each
+repository today, and one context holding every repository sees each of them
+less clearly. Research each one in its own fresh context:
+
+1. Dispatch one read-only research subagent per participating repository, in
+   parallel, with `research-prompt.md` (this skill's folder). Each reads its
+   repository's own instructions first and writes a note to
+   `.feature/<ID>/research/<repo>.md`: where the feature lands, the
+   interfaces the repository exposes and consumes, data, tests and gate,
+   owners, flags and rollout, risks and open questions, each with
+   `path:line`. Where your harness has no subagents, research the
+   repositories one at a time yourself and write the same notes.
+2. Read every note and spot-check its key claims against the code. A note
+   is a map, not the territory.
+3. Write `.feature/<ID>/research/context-map.md`: the services involved, how
+   they talk today (calls, events, shared data), which interfaces and seams
+   this feature touches, and who owns each side.
+4. Look for open PRs in each repo that touch the same contracts or files
+   (provider reference: H2). **Overlap with another feature is Tier 3**:
+   stop and ask your human partner how to sequence.
+5. Bring the open questions from the notes to your human partner; the
+   answers go into the spec.
 
 ### 3. Spec - writing-unified-specs
 

@@ -26,7 +26,10 @@ the spec with you."
 - If superpowers is installed, use its brainstorming skill for the
   conversation itself; this skill adds the multi-repo structure and the PR.
 - Read the work item (provider reference T1) and the research from the
-  coordinating skill: what each repo does today, where the seams are.
+  coordinating skill: each repository's note in `.feature/<ID>/research/`
+  and the context map of services and seams. Build the spec's Services and
+  Boundaries section from the map, and cite a note when a requirement rests
+  on how a service works today.
 
 ## The Conversation
 
