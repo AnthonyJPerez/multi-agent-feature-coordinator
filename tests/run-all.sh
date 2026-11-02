@@ -33,7 +33,7 @@ with_limit() {
 failed=()
 for t in skills/test-skill-structure.sh manifests/test-manifests.sh hooks/test-json.sh hooks/test-run-hook-cmd.sh \
   hooks/test-session-start.sh hooks/test-worktree-guard.sh hooks/test-feature-gate.sh \
-  workspace/test-feature-workspace.sh shell-lint/test-shell-lint.sh; do
+  workspace/test-feature-workspace.sh shell-lint/test-bash-constructs.sh shell-lint/test-shell-lint.sh; do
   [ -f "$t" ] || continue
   printf '\n=== %s\n' "$t"
   start=$(date +%s)

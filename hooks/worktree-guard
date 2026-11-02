@@ -156,6 +156,9 @@ judge() {
 TOKS=()
 SUBCMDS=()
 BQ='`'
+SQ="'"
+TAB=$(printf '\t')
+CR=$(printf '\r')
 tw=""
 tw_in=0
 hd_wait=0
@@ -194,7 +197,7 @@ tokenize() {
   while IFS= read -r line || [ -n "$line" ]; do
     if [ -n "$hd_delim" ] && [ -z "$q" ]; then
       chk="$line"
-      [ "$hd_strip" = 1 ] && chk="${chk#"${chk%%[!$'\t']*}"}"
+      [ "$hd_strip" = 1 ] && chk="${chk#"${chk%%[!$TAB]*}"}"
       if [ "$chk" = "$hd_delim" ]; then
         hd_delim=""
         hd_strip=0
@@ -255,8 +258,8 @@ tokenize_line() {
   while [ "$i" -lt "$n" ]; do
     if [ "$q" = "'" ]; then
       part="${s:i}"
-      if [[ "$part" == *"'"* ]]; then
-        part="${part%%"'"*}"
+      if [[ "$part" == *"$SQ"* ]]; then
+        part="${part%%"$SQ"*}"
         tw="$tw$part"
         i=$((i + ${#part} + 1))
         q=""
@@ -835,7 +838,6 @@ fi
 # (Quoting is done with parameter expansion: bash 3.2 mis-parses single
 # quotes inside a double-quoted string inside $(...).)
 EOT=$(printf '\004')
-SQ="'"
 SQ_ESC="'\\''"
 json_values() {
   local var="${AP}$1" arr="${AP}$1_array" v="" e rest
@@ -861,7 +863,7 @@ check_patch_text() {
   local text="$1" p
   case "$text" in *'*** '*'File: '*) ;; *) return 0 ;; esac
   while IFS= read -r p; do
-    p="${p%$'\r'}"
+    p="${p%"$CR"}"
     [ -n "$p" ] && judge "$p" "patching"
   done < <(patch_paths "$text")
 }
