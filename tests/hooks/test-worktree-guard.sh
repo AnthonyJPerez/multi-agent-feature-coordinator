@@ -140,7 +140,10 @@ expect "apply_patch outside" 2 "$(claude "$A" apply_patch "{\"input\":$(json_esc
 *** Update File: $B/m.go
 @@
 *** End Patch")}")"
-expect "codex-style command array" 2 "$(claude "$A" shell "{\"command\":[\"bash\",\"-lc\",\"touch $B/q\"]}")"
+expect "codex-style command array" 2 "$(claude "$A" shell "{\"command\":[\"bash\",\"-lc\",\"touch $B/q\"]}" FC_GUARD_DEBUG=1)"
+expect "array command, plain touch" 2 "$(claude "$A" shell "{\"command\":[\"touch\",\"$B/q4\"]}" FC_GUARD_DEBUG=1)"
+expect "array command through the Bash tool name" 2 "$(claude "$A" Bash "{\"command\":[\"touch\",\"$B/q5\"]}" FC_GUARD_DEBUG=1)"
+expect "string command through the shell tool name" 2 "$(claude "$A" shell "{\"command\":\"touch $B/q6\"}" FC_GUARD_DEBUG=1)"
 
 section "identity and robustness"
 expect "non-feature session passes" 0 "$(claude "$TEST_ROOT" Edit "{\"file_path\":\"$B/x\"}")"

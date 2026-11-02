@@ -59,6 +59,11 @@ HOME_CANON=$(fc_canon "${HOME:-/nonexistent}")
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
+# FC_GUARD_DEBUG=1 explains each decision on stderr.
+dbg() {
+  if [ "${FC_GUARD_DEBUG:-0}" = 1 ]; then printf 'fc-guard: %s\n' "$*" >&2; fi
+}
+
 deny() {
   local who="the worker for $FC_REPO"
   [ "$FC_ROLE" = anchor ] && who="the coordinator"
@@ -704,6 +709,7 @@ analyze_segment() {
   [ "$i" -lt "$n" ] || return 0
   cmd="${args[i]}"
   base="${cmd##*/}"
+  dbg "segment: command <$base>, $((n - i - 1)) argument(s), in $CURDIR"
   set -- ${args[@]+"${args[@]:i+1}"}
   case "$base" in
     cd | pushd)
@@ -788,6 +794,7 @@ analyze_command() {  # CMD
   DEPTH=$((DEPTH + 1))
   SUBCMDS=()
   tokenize "$cmd"
+  dbg "command [$cmd] -> ${#TOKS[@]} tokens: $(printf '<%s>' ${TOKS[@]+"${TOKS[@]}"})"
   subs=(${SUBCMDS[@]+"${SUBCMDS[@]}"})
   saved_toks=(${TOKS[@]+"${TOKS[@]}"})
   for t in ${saved_toks[@]+"${saved_toks[@]}"} ";"; do
@@ -823,6 +830,7 @@ analyze_command() {  # CMD
 
 tool="${P_tool_name:-${P_toolName:-}}"
 tool=$(lower "$tool")
+dbg "tool <$tool>, identity $FC_WHO ($FC_ROLE) in $OWN"
 [ -n "$tool" ] || exit 0
 
 if [ -n "${P_toolArgs+x}" ]; then
@@ -842,6 +850,7 @@ SQ_ESC="'\\''"
 json_values() {
   local var="${AP}$1" arr="${AP}$1_array" v="" e rest
   [ -n "${!var+x}" ] || return 0
+  dbg "value $1: array=<${!arr:-}> <${!var}>"
   if [ -n "${!arr:-}" ]; then
     rest="${!var}$EOT"
     while [ -n "$rest" ]; do
