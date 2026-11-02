@@ -217,36 +217,87 @@ fc_is_unlocked() {
 }
 
 # ---------------------------------------------------------------------------
-# JSON (only what the hooks need: string fields out of a payload)
+# JSON (only what the hooks need: string values out of a payload)
+#
+# Parsed with one awk pass, not bash's =~: regex engines differ between
+# platforms, and macOS's is pathologically slow on large payloads (a 120 KB
+# Bash command took minutes). awk's match() is linear everywhere, and the
+# program sticks to features of every awk (one-true-awk as on macOS, gawk,
+# mawk, busybox).
 # ---------------------------------------------------------------------------
 
-fc_json_unescape() {
-  local s="$1"
-  s="${s//\\\\/$'\001'}"
-  s="${s//\\\"/\"}"
-  s="${s//\\\//\/}"
-  s="${s//\\n/$'\n'}"
-  s="${s//\\t/$'\t'}"
-  s="${s//\\r/}"
-  s="${s//$'\001'/\\}"
-  printf '%s' "$s"
+# Output per key found (first occurrence): "key=value" for a string,
+# "key[]=elem<EOT>elem..." for an array of strings, each record ended by ETX.
+# Escaped backslashes come out as STX; the caller maps them back, because
+# replacement-string escaping differs between awks.
+FC_JSON_AWK='
+function unesc(s) {
+  gsub(/\\\\/, "\002", s)
+  gsub(/\\"/, "\"", s)
+  gsub(/\\\//, "/", s)
+  gsub(/\\n/, "\n", s)
+  gsub(/\\t/, "\t", s)
+  gsub(/\\r/, "\r", s)
+  gsub(/\\[bf]/, "", s)
+  gsub(/\\u[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]/, "?", s)
+  return s
+}
+BEGIN { RS = "\001"; n = split(keys, K, " ") }
+{ doc = doc $0 }
+END {
+  str = "\"([^\"\\\\]|\\\\.)*\""
+  ws = "[ \t\r\n]*"
+  for (k = 1; k <= n; k++) {
+    key = K[k]
+    if (match(doc, "\"" key "\"" ws ":" ws str)) {
+      v = substr(doc, RSTART, RLENGTH)
+      v = substr(v, index(v, ":") + 1)
+      v = substr(v, index(v, "\"") + 1)
+      v = substr(v, 1, length(v) - 1)
+      printf "%s=%s\003", key, unesc(v)
+    } else if (match(doc, "\"" key "\"" ws ":" ws "\\[")) {
+      rest = substr(doc, RSTART + RLENGTH)
+      out = ""
+      sep = ""
+      while (match(rest, "^" ws str ws ",?")) {
+        e = substr(rest, RSTART, RLENGTH)
+        rest = substr(rest, RLENGTH + 1)
+        e = substr(e, index(e, "\"") + 1)
+        sub(/"[ \t\r\n]*,?$/, "", e)
+        out = out sep unesc(e)
+        sep = "\004"
+      }
+      printf "%s[]=%s\003", key, out
+    }
+  }
+}'
+
+# fc_json_load JSON PREFIX KEY... - set ${PREFIX}KEY to each key's value.
+# An array of strings sets ${PREFIX}KEY to its elements separated by EOT
+# ($'\004') and ${PREFIX}KEY_array=1. Keys that are absent end up unset.
+fc_json_load() {
+  local json="$1" prefix="$2" rec key val
+  shift 2
+  for key in "$@"; do unset "${prefix}${key}" "${prefix}${key}_array"; done
+  while IFS= read -r -d $'\003' rec; do
+    key="${rec%%=*}"
+    val="${rec#*=}"
+    case "$key" in
+      *'[]')
+        key="${key%??}"
+        printf -v "${prefix}${key}_array" '%s' 1
+        ;;
+    esac
+    printf -v "${prefix}${key}" '%s' "$val"
+  done < <(printf '%s' "$json" | LC_ALL=C awk -v keys="$*" "$FC_JSON_AWK" 2>/dev/null | LC_ALL=C tr '\002' '\\')
 }
 
-# fc_json_get JSON KEY - unescaped value of the first "KEY": "string" pair.
+# fc_json_get JSON KEY - the string value of KEY (first occurrence).
 fc_json_get() {
-  local json="$1" key="$2" re
-  re="\"${key}\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\""
-  if [[ $json =~ $re ]]; then
-    fc_json_unescape "${BASH_REMATCH[1]}"
-    return 0
-  fi
-  return 1
-}
-
-# fc_json_bool JSON KEY - true when "KEY": true appears.
-fc_json_bool() {
-  local re="\"${2}\"[[:space:]]*:[[:space:]]*true"
-  [[ $1 =~ $re ]]
+  fc_json_load "$1" FC_JG_ "$2"
+  local var="FC_JG_$2"
+  [ -n "${!var+x}" ] || return 1
+  printf '%s' "${!var}"
 }
 
 fc_json_escape() {

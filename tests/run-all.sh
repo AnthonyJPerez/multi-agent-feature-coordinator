@@ -13,15 +13,25 @@ with_limit() {
   if command -v timeout >/dev/null 2>&1; then
     timeout "$limit" "$@"
   elif command -v perl >/dev/null 2>&1; then
-    # macOS has no coreutils timeout; perl's alarm is everywhere.
-    perl -e 'alarm shift; exec @ARGV or die "exec: $!"' "$limit" "$@"
+    # macOS has no coreutils timeout. Run the suite in its own process group
+    # and kill the whole group, hooks included, when the alarm fires.
+    perl -e '
+      my $t = shift;
+      my $pid = fork();
+      die "fork: $!" unless defined $pid;
+      if ($pid == 0) { setpgrp(0, 0); exec @ARGV or die "exec: $!"; }
+      $SIG{ALRM} = sub { kill "TERM", -$pid; sleep 2; kill "KILL", -$pid; exit 124; };
+      alarm $t;
+      waitpid($pid, 0);
+      exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
+    ' "$limit" "$@"
   else
     "$@"
   fi
 }
 
 failed=()
-for t in skills/test-skill-structure.sh manifests/test-manifests.sh hooks/test-run-hook-cmd.sh \
+for t in skills/test-skill-structure.sh manifests/test-manifests.sh hooks/test-json.sh hooks/test-run-hook-cmd.sh \
   hooks/test-session-start.sh hooks/test-worktree-guard.sh hooks/test-feature-gate.sh \
   workspace/test-feature-workspace.sh shell-lint/test-shell-lint.sh; do
   [ -f "$t" ] || continue

@@ -34,7 +34,12 @@ LIB="${PLUGIN_ROOT}/skills/coordinating-multi-repo-features/scripts/fc-lib"
 PAYLOAD=$(cat 2>/dev/null)
 [ -n "$PAYLOAD" ] || exit 0
 
-payload_cwd=$(fc_json_get "$PAYLOAD" cwd 2>/dev/null) || payload_cwd=""
+# One parse of the payload; ARGS keys are read from it too unless the harness
+# sends them as a JSON string (Copilot's toolArgs).
+ARG_KEYS="file_path notebook_path path filePath target_file input patch command cmd"
+# shellcheck disable=SC2086
+fc_json_load "$PAYLOAD" P_ cwd tool_name toolName toolArgs $ARG_KEYS
+payload_cwd="${P_cwd:-}"
 # Identity comes from where the session was launched, not where its shell has
 # wandered: the launcher exports FC_SESSION_WORKTREE; Claude Code exports
 # CLAUDE_PROJECT_DIR.
@@ -813,37 +818,34 @@ analyze_command() {  # CMD
 # dispatch on the tool
 # ---------------------------------------------------------------------------
 
-tool=$(fc_json_get "$PAYLOAD" tool_name 2>/dev/null) || tool=$(fc_json_get "$PAYLOAD" toolName 2>/dev/null) || tool=""
+tool="${P_tool_name:-${P_toolName:-}}"
 tool=$(lower "$tool")
 [ -n "$tool" ] || exit 0
 
-ARGS="$PAYLOAD"
-if targs=$(fc_json_get "$PAYLOAD" toolArgs 2>/dev/null); then
-  ARGS="$targs"
+if [ -n "${P_toolArgs+x}" ]; then
+  # shellcheck disable=SC2086
+  fc_json_load "$P_toolArgs" A_ $ARG_KEYS
+  AP=A_
+else
+  AP=P_
 fi
 
-# json_values KEY - the string value of KEY, or the strings of an array value
-# joined by spaces, NUL-terminated. First occurrence only: walking to later
-# occurrences with ${var#*"$match"} is quadratic on large payloads.
+# json_values KEY - KEY's string value, or the elements of a string array
+# re-quoted for the shell and joined by spaces; NUL-terminated.
 json_values() {
-  local key="$1" re v arr
-  if v=$(fc_json_get "$ARGS" "$key"); then
-    printf '%s\0' "$v"
-    return 0
-  fi
-  re="\"${key}\"[[:space:]]*:[[:space:]]*\\[(([^]\"]|\"([^\"\\\\]|\\\\.)*\")*)\\]"
-  if [[ $ARGS =~ $re ]]; then
-    arr="${BASH_REMATCH[1]}"
-    re='^[^"]*"(([^"\\]|\\.)*)"(.*)$'
-    v=""
-    while [[ $arr =~ $re ]]; do
-      # Re-quote each element so argument boundaries survive the join.
-      v="$v '$(fc_json_unescape "${BASH_REMATCH[1]}" | sed "s/'/'\\\\''/g")'"
-      arr="${BASH_REMATCH[3]}"
+  local var="${AP}$1" arr="${AP}$1_array" v="" e rest
+  [ -n "${!var+x}" ] || return 0
+  if [ -n "${!arr:-}" ]; then
+    rest="${!var}"$'\004'
+    while [ -n "$rest" ]; do
+      e="${rest%%$'\004'*}"
+      rest="${rest#*$'\004'}"
+      v="$v '$(printf '%s' "$e" | sed "s/'/'\\\\''/g")'"
     done
     printf '%s\0' "${v# }"
+  else
+    printf '%s\0' "${!var}"
   fi
-  return 0
 }
 
 patch_paths() {  # PATCH TEXT -> one path per line

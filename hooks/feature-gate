@@ -27,7 +27,8 @@ LIB="${PLUGIN_ROOT}/skills/coordinating-multi-repo-features/scripts/fc-lib"
 [ "${FC_GATE:-on}" = off ] && exit 0
 
 PAYLOAD=$(cat 2>/dev/null)
-payload_cwd=$(fc_json_get "$PAYLOAD" cwd 2>/dev/null) || payload_cwd=""
+fc_json_load "$PAYLOAD" P_ cwd
+payload_cwd="${P_cwd:-}"
 IDENTITY_DIR="${FC_SESSION_WORKTREE:-${CLAUDE_PROJECT_DIR:-${payload_cwd:-$PWD}}}"
 IDENTITY_DIR=$(fc_to_unix "$IDENTITY_DIR")
 case "$IDENTITY_DIR" in */.worktrees/*) ;; *) exit 0 ;; esac
