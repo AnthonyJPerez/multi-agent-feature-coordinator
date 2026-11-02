@@ -577,7 +577,7 @@ analyze_http() {
 analyze_gh() {
   local joined=" $* "
   case "${1:-} ${2:-}" in
-    "pr merge") deny "gh pr merge: merging pull requests is your human partner's call." "Mark the PR ready and tell your human partner it is ready to merge." ;;
+    "pr merge") deny "gh pr merge: merging pull requests is your human partner's call." "PRs leave draft in the plan's merge order; tell the coordinator when yours is complete." ;;
     "pr review")
       case "$joined" in *" --approve "* | *" -a "*) deny "gh pr review --approve: an agent approval never counts." "Reviews need a human approver." ;; esac ;;
     "api "*) shift; analyze_http gh "$@" ;;

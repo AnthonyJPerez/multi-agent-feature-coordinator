@@ -35,7 +35,7 @@ Check, in this order:
    find one, look for the same class of bug elsewhere in the diff and report
    them together.
 4. **Compatibility** - can this merge before the other repos' PRs without
-   breaking callers (expand/contract, flags off by default)?
+   breaking callers (expand/contract; any flags start where the plan says)?
 5. **Security** - authentication, authorization, injection, secrets, personal
    data.
 

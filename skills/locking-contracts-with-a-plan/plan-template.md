@@ -12,11 +12,16 @@
 | 2 | {{repo}} | `{{prefix}}{{ID}}` | #1 | 2 | `{{flag}}` |
 | D | {{anchor}} | `{{prefix}}{{ID}}-docs` | all | last | - |
 
+Merge order is a step number. PRs that share a step merge in any order; a
+step starts when every PR in the earlier steps has merged. Every PR is a
+draft until its step comes, then the coordinator marks it ready. Flag is
+`-` for a PR that ships without one.
+
 ## Compatibility Rule
 
 Expand, then contract. Each PR is safe to merge before the PRs after it:
-new fields and endpoints are additive; callers switch behind flags; removal
-of the old shape is its own later PR.
+new fields and endpoints are additive; callers switch over (behind a flag
+when the plan uses one); removal of the old shape is its own later PR.
 
 ## Contracts
 
@@ -37,11 +42,18 @@ Breaking-change check: {{command and result}}
 - **Gate:** `{{command}}` (if not set in the team config)
 - **Notes for the worker:** ...
 
-## Flags and Rollout
+## Feature Flags and Rollout
 
-| Order | Flag | Repository | Turn on when | Turn off by |
-|---|---|---|---|---|
-| 1 | `{{flag}}` | {{repo}} | ... | ... |
+Feature flags: {{yes | no}} - {{why}}
+
+With flags - each flag, where it starts, and the order to change it:
+
+| Order | Flag | Repository | Starts | Change when | Roll back by |
+|---|---|---|---|---|---|
+| 1 | `{{flag}}` | {{repo}} | {{on or off}} | ... | ... |
+
+Without flags - the merge steps are the rollout: what each step changes for
+users, what to watch after it merges, and how to revert it.
 
 ## Cross-Repo End-to-End Check
 

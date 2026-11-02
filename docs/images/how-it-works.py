@@ -48,10 +48,10 @@ BUS_Y = 700
 
 REPOS = ["auth-service", "billing-service", "web-client", "pricing-engine"]
 HOSTS = [
-    ("GitHub", "pull request", False),
-    ("Azure DevOps Server", "pull request", False),
-    ("GitLab", "merge request", False),
-    ("No remote", "local review packet", True),
+    ("GitHub", "draft PR \u2192 ready", False),
+    ("Azure DevOps Server", "draft PR \u2192 active", False),
+    ("GitLab", "draft MR \u2192 ready", False),
+    ("No remote", "draft packet \u2192 ready", True),
 ]
 CHIPS = [
     ("Plan & contracts", "locked by git blob id", True),
@@ -102,9 +102,10 @@ def svg(p):
     label = ("Diagram: on your machine, a coordinator session in the anchor repo writes the plan and "
              "locked contracts into shared files; one worker session per repository, each in its own "
              "git worktree with a guard and a stop gate, reads them and works in parallel. Each worker "
-             "pushes to its own repo's host: GitHub, Azure DevOps Server, GitLab, or a local repo with "
-             "no remote. You approve the spec and plan, answer the workers' questions, and merge every "
-             "PR in plan order.")
+             "opens a draft PR on its own repo's host - GitHub, Azure DevOps Server, GitLab, or a review "
+             "packet for a local repo with no remote - as soon as it starts. The coordinator marks each "
+             "PR ready when its merge step comes. You approve the spec and plan, answer the workers' "
+             "questions, and merge the ready PRs in plan order.")
     add(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
         f'role="img" aria-labelledby="title desc">')
     add('<title id="title">How feature-coordinator runs one feature across many repositories</title>')
@@ -138,7 +139,7 @@ def svg(p):
     caps(c["x"] + 18, c["y"] + 27, "COORDINATOR SESSION")
     text(c["x"] + 18, c["y"] + 54, "platform-specs", size=18, weight=700,
          after=[(" (anchor repo)", 15, 400, p["muted"])])
-    text(c["x"] + 18, c["y"] + 79, "spec · plan · contracts · dispatches workers", size=14.5, fill=p["muted"])
+    text(c["x"] + 18, c["y"] + 79, "spec · plan · dispatch · marks PRs ready in order", size=14.5, fill=p["muted"])
 
     # You -> coordinator
     y = c["y"] + c["h"] // 2
@@ -192,7 +193,7 @@ def svg(p):
     for x in CENTERS:
         line([(x, WORKER_Y + WORKER_H), (x, HOST_Y)], p["arrow"])
     mid = (MACHINE_BOTTOM + HOST_Y) / 2 + 5
-    text((CENTERS[0] + CENTERS[1]) / 2, mid, "push · open PR", size=14, fill=p["muted"], anchor="middle")
+    text((CENTERS[0] + CENTERS[1]) / 2, mid, "push · draft PR from day one", size=14, fill=p["muted"], anchor="middle")
     text((CENTERS[2] + CENTERS[3]) / 2, mid, "each repo's own host", size=14, fill=p["muted"], anchor="middle")
 
     # Hosts
@@ -207,7 +208,7 @@ def svg(p):
     line([(lx_bus, HOST_Y + HOST_H), (lx_bus, BUS_Y), (CENTERS[-1], BUS_Y)], p["human"], end=False)
     for x in CENTERS:
         line([(x, BUS_Y), (x, HOST_Y + HOST_H)], p["human"])
-    text(CX, BUS_Y + 26, "you review and merge every PR, in the order the plan sets",
+    text(CX, BUS_Y + 26, "PRs leave draft in merge order; you review and merge each one",
          size=14, weight=600, fill=p["human"])
 
     add("</svg>")

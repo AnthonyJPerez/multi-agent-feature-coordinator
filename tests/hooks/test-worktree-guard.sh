@@ -136,6 +136,11 @@ expect "az draft false" 0 "$(bash_cmd "$A" "az repos pr update --id 7 --draft fa
 expect "glab merge" 2 "$(bash_cmd "$A" "glab mr merge 3")"
 expect "glab approve" 2 "$(bash_cmd "$A" "glab mr approve 3")"
 expect "glab ready" 0 "$(bash_cmd "$A" "glab mr update 3 --ready")"
+expect "glab back to draft" 0 "$(bash_cmd "$A" "glab mr update 3 --draft")"
+expect "gh pr ready" 0 "$(bash_cmd "$A" "gh pr ready 12")"
+expect "gh pr back to draft" 0 "$(bash_cmd "$A" "gh pr ready 12 --undo")"
+assert_contains "merge denial points at the merge order" "$(bash_cmd "$A" "gh pr merge 12" >/dev/null; cat "$TEST_ROOT/guard.err")" "merge order"
+expect "az back to draft" 0 "$(bash_cmd "$A" "az repos pr update --id 7 --draft true")"
 expect "agent unlock" 2 "$(bash_cmd "$A" "bash $FW_SCRIPT unlock G-1 --repo svc-a --path p --reason r")"
 expect "finish --force" 2 "$(bash_cmd "$C" "bash $FW_SCRIPT finish G-1 --force")"
 expect "contract-check is fine" 0 "$(bash_cmd "$A" "bash $FW_SCRIPT contract-check G-1")"
@@ -219,6 +224,11 @@ expect "tea create" 0 "$(bash_cmd "$A" "tea pulls create --head feat/G-1 --base 
 expect "Gerrit submit over ssh" 2 "$(bash_cmd "$A" "ssh -p 29418 review.example.com gerrit review --submit 123,1")"
 expect "Gerrit +2 over ssh" 2 "$(bash_cmd "$A" "ssh -p 29418 review.example.com gerrit review --code-review +2 123,1")"
 expect "Gerrit change upload" 0 "$(bash_cmd "$A" "git push origin HEAD:refs/for/main")"
+expect "Gerrit ready over REST" 0 "$(bash_cmd "$A" "curl -X POST https://review.example.com/a/changes/123/ready")"
+expect "Gerrit back to wip over REST" 0 "$(bash_cmd "$A" "curl -X POST https://review.example.com/a/changes/123/wip")"
+expect "Gerrit ready on push" 0 "$(bash_cmd "$A" "git push origin HEAD:refs/for/main%ready")"
+expect "Bitbucket ready over REST" 0 "$(bash_cmd "$A" "curl -X PUT https://api.bitbucket.org/2.0/repositories/w/r/pullrequests/12 -d @ready.json")"
+expect "Gitea title edit over REST" 0 "$(bash_cmd "$A" "curl -X PATCH https://gitea.example.com/api/v1/repos/o/r/pulls/4 -d @title.json")"
 expect "Gerrit submit on push" 2 "$(bash_cmd "$A" "git push origin HEAD:refs/for/main%submit")"
 expect "apply_patch Add File outside" 2 "$(claude "$A" apply_patch "{\"input\":$(json_escape "*** Begin Patch
 *** Add File: $B/new.go

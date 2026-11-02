@@ -34,8 +34,9 @@ authors resolve; the web UI has the button.
 **H6 - stacked sub-PR:** `tea pulls create --head "<prefix><ID>--sub-<slug>"
 --base "<prefix><ID>" ...`.
 
-**H7 - ready for review:** remove the `WIP:` prefix from the title (web UI,
-or `PATCH /api/v1/repos/{owner}/{repo}/pulls/{index}` with the new `title`).
+**H7 - ready for review, or back to draft:** remove the `WIP:` prefix from
+the title (web UI, or `PATCH /api/v1/repos/{owner}/{repo}/pulls/{index}`
+with the new `title`); put the prefix back to return it to draft.
 
 **H8 - approval rules** (repository branch protection, set by an admin):
 required approvals (1, or 2 for high-risk paths), dismiss stale approvals

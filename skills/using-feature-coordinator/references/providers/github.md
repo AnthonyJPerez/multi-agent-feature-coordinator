@@ -60,7 +60,15 @@ git push -u origin HEAD
 gh pr create --draft --base "<prefix><ID>" --title "<ID>: <repo> - <sub summary>" --body-file sub-body.md
 ```
 
-**H7 - ready for review:** `gh pr ready <n>`
+**H7 - ready for review, or back to draft**
+
+```bash
+gh pr ready <n>          # draft -> ready for review
+gh pr ready <n> --undo   # back to draft
+```
+
+GitHub does not request code owners' reviews on a draft; marking it ready
+requests them, so they are asked when the PR's merge step comes.
 
 **H8 - approval rules** (repository rulesets or branch protection on the
 default branch; an admin sets them):

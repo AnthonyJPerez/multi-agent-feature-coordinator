@@ -35,7 +35,8 @@ the spec with you."
 - Cover, in roughly this order: the problem and who has it, what success
   looks like, what is out of scope, the behavior in each scenario, which
   services are involved and how they talk, what data or contracts change
-  (conceptually - exact schemas come in the plan), rollout and flags,
+  (conceptually - exact schemas come in the plan), rollout needs (the plan
+  decides whether to use feature flags),
   failure modes, security and privacy, migration of existing data.
 - Say what you would choose and why, then let your human partner decide.
 - Stop when every section of the template has an answer or an explicit open
@@ -60,7 +61,8 @@ the spec with you."
 3. Ask your human partner to request reviewers: the people who own the
    behavior, plus each affected service's code owners if they want an early
    look.
-4. Mark it ready when your human partner says so (H7).
+4. Mark it ready (H7) when your human partner says the spec is complete.
+   Until then it stays a draft that reviewers can comment on.
 
 **Gate:** your human partner approves and merges the spec PR. Review
 comments go through triaging-pr-feedback like any other PR.

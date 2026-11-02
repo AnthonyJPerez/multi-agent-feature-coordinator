@@ -95,7 +95,8 @@ partner merges, and you run `fw lock <ID>`. The lock is the merged plan.
 ### 5. Code wave - dispatching-repo-workers
 
 `fw dispatch <ID>` writes each worker's brief and launches one session per
-repo. Then monitor:
+repo. Each worker opens a draft PR as soon as its contracts are applied, so
+reviewers can comment while the work happens. Then monitor:
 
 ```bash
 fw status <ID>                       # branches, drift, PRs, unread mail
@@ -122,10 +123,19 @@ collect the proof index.
 
 ### 8. Review - triaging-pr-feedback
 
-Workers triage their own PRs. You handle ripples and keep the PRs
-consistent with each other.
+Reviewers comment on the drafts as the work happens; workers triage their
+own PRs. You handle ripples and keep the PRs consistent with each other.
 
-### 9. Merge, rollout, cleanup - finishing-a-multi-repo-feature
+### 9. Ready in merge order
+
+Every PR stays a draft until its merge step comes, and people can comment on
+it the whole time. You alone mark the feature's PRs ready (H7): a PR in the
+current merge step - the lowest step with unmerged PRs - once its worker has
+reported it complete, CI and the contract check are green and its threads
+are answered. A ready PR that needs a large change goes back to draft (H7).
+finishing-a-multi-repo-feature has the check.
+
+### 10. Merge, rollout, cleanup - finishing-a-multi-repo-feature
 
 ## Bounded Autonomy
 
@@ -134,9 +144,10 @@ consistent with each other.
 - Between phases, stop: your human partner approves the spec, the plan, each
   merge and each rollout step.
 - **Milestone runner (opt-in only):** if your human partner turns it on, you
-  may advance through the plan's PR matrix on your own whenever the
-  deterministic gates hold (CI green, required human approvals present,
-  previous PR merged), within the turn or credit budget they set. You still
+  may advance through the plan's PR matrix on your own - marking each PR of
+  the current merge step ready - whenever the deterministic gates hold (every
+  earlier step merged, CI green, contract check passing, the worker reported
+  the PR complete), within the turn or credit budget they set. You still
   never merge.
 - Poll PRs or mail on a timer only when your human partner asks for it, and
   only while this session stays open.
@@ -145,6 +156,7 @@ consistent with each other.
 
 - Edit, commit or push in another repo's worktree or main checkout.
 - Merge or approve a PR, or set one to merge itself.
+- Mark a PR ready before every PR in the earlier merge steps has merged.
 - Unlock a contract (`fw unlock` is your human partner's command).
 - Post to a team channel, a ticket comment or a cloud service unasked.
 - Hand a worker a summary instead of a path to the document.
@@ -159,6 +171,7 @@ consistent with each other.
 | "This contract tweak is tiny" | Every contract change is a ripple. Plan amendment, human approval. |
 | "I'll spawn a subagent per repo, it's faster" | Subagents run in your directory and cannot ask your human partner. One session per worktree. |
 | "Both PRs are green, I'll merge them" | Your human partner merges. |
+| "Every PR is complete, I'll mark them all ready" | Only the current merge step. Later PRs stay drafts and keep collecting comments. |
 | "I'll post the status to the channel" | Local by default. Ask first. |
 
 ## Commands

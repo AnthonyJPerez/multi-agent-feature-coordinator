@@ -39,7 +39,8 @@ reviewer).
 
 **H6 - stacked sub-PR:** as H1 with the feature branch as `destination`.
 
-**H7 - ready:** PUT `$BB/pullrequests/<id>` with `{"draft": false}`.
+**H7 - ready, or back to draft:** PUT `$BB/pullrequests/<id>` with
+`{"draft": false}`; `{"draft": true}` turns it back into a draft.
 
 **H8 - approval rules** (Repository settings > Branch restrictions / merge
 checks; some need Premium): minimum approvals, reset approvals when the

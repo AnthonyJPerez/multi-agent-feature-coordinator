@@ -1,5 +1,27 @@
 # Release Notes
 
+## Unreleased
+
+- Pull requests open as drafts and stay drafts until their merge step in the
+  plan comes. Workers open the draft at their first push, so reviewers can
+  comment while the work happens, and triage those comments as they arrive;
+  when the slice is done they report it complete instead of marking it
+  ready. The coordinator marks the current merge step's complete PRs ready
+  (on Azure DevOps: publishes them), one step at a time, and returns a PR
+  that needs a large change to draft. Workers still mark their own stacked
+  sub-PRs ready.
+- Feature flags are a plan decision: the plan says whether the feature uses
+  them and whether each one starts on or off, or how the merge steps roll
+  it out without flags. Merging and rollout follow that instead of assuming
+  flags that start off.
+- Provider references cover both directions of H7, ready and back to draft,
+  for GitHub, Azure DevOps, GitLab, Bitbucket, Gerrit, Gitea and review
+  packets, plus how each host treats drafts.
+- `fw status` shows whether GitLab merge requests and review packets are
+  drafts.
+- The README leads with the problem, the approach and when to use the
+  plugin, with a diagram of the sessions, repos and hosts.
+
 ## 0.1.0 - 2026-11-01
 
 First release.

@@ -15,7 +15,7 @@ within one feature.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/how-it-works-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/images/how-it-works-light.svg">
-  <img alt="On your machine, a coordinator session in the anchor repo writes the plan and the locked contracts into shared files. One worker session per repository, each in its own git worktree with a guard and a stop gate, reads those files and works in parallel, then pushes to its repository's own host: GitHub, Azure DevOps Server, GitLab, or a local repo with no remote. You approve the spec and plan, answer the workers' questions, and merge every pull request in the order the plan sets." src="docs/images/how-it-works-light.svg">
+  <img alt="On your machine, a coordinator session in the anchor repo writes the plan and the locked contracts into shared files. One worker session per repository, each in its own git worktree with a guard and a stop gate, reads those files and works in parallel, and opens a draft pull request on its repository's own host as soon as it starts: GitHub, Azure DevOps Server, GitLab, or a review packet for a local repo with no remote. The coordinator marks each pull request ready when its merge step comes. You approve the spec and plan, answer the workers' questions, and merge the ready pull requests in plan order." src="docs/images/how-it-works-light.svg">
 </picture>
 
 ## The problem
@@ -39,7 +39,7 @@ several and the same problems show up:
 - **Agents change what they don't own.** A session edits a sibling
   repository, writes into a main checkout or pushes to the default branch.
 - **Order matters, and nobody owns it.** The API change has to ship before
-  the client that calls it, and feature flags have to turn on in sequence.
+  the client that calls it, and new behavior has to switch on in sequence.
   Merge out of order and production runs half a feature.
 - **Review becomes the bottleneck.** Every repository produces a pull
   request, every review produces more changes, and an agent that applies
@@ -58,8 +58,8 @@ off on every step.
 | One session can't hold every repository | A **coordinator** session in an *anchor* repository (where your specs live) plans the feature. Each repository gets its own **worker** session in its own git worktree, with that repository's instructions, hooks and test commands. Workers run in parallel. |
 | Parallel agents drift apart | The plan carries the exact contract files: OpenAPI, protobuf, event schemas. Once the plan's pull request merges, `feature-workspace lock` pins each contract to its **git blob id**, so every worker builds against the same bytes. Changing a contract takes a new plan pull request, and only you can unlock one. |
 | Agents change what they don't own | A **guard hook** keeps each session inside its own worktree and blocks force pushes, pushes to the default branch, merges and approvals. |
-| Order matters | The plan sets the order of the pull requests and of the rollout. Agents can't merge: **you** merge in plan order with flags off, then turn the flags on in order. |
-| Review becomes the bottleneck | A **stop gate** sends a worker back to work while its contract check or tests fail. Each worker **triages** its pull request's review threads instead of applying every comment, sends changes that affect other repositories through the coordinator, and after three rounds stops to propose a different approach. |
+| Order matters | The plan sets the merge order as numbered steps. Every pull request stays a **draft** until its step comes; then the coordinator marks it ready, which tells reviewers it is next to merge. Agents can't merge: **you** merge each step. The plan also decides whether to use feature flags and whether each one starts on or off; you change them in the order it sets. |
+| Review becomes the bottleneck | Each worker opens its draft pull request as soon as it starts, so reviewers can comment while the work happens. A **stop gate** sends a worker back to work while its contract check or tests fail. Each worker **triages** review threads instead of applying every comment, sends changes that affect other repositories through the coordinator, and after three rounds stops to propose a different approach. |
 | Decisions get lost | Every push carries a **decision block** that lists the choices the agent made on its own, and a decision log keeps them for the whole feature. |
 
 The sessions coordinate through plain files instead of chat summaries: the
@@ -80,11 +80,11 @@ Discord) only when you ask.
 | Phase | What happens | Your call |
 |---|---|---|
 | 1. Start | `feature-workspace start` creates a worktree for each repository on the feature branch, plus the shared files | - |
-| 2. Spec | The coordinator writes one spec with you and opens it as a pull request in the anchor repository | Approve and merge |
-| 3. Plan | The plan's pull request lists each repository's pull request, its acceptance tests, the rollout order and the contract files | Approve and merge; the contracts lock |
-| 4. Build | `feature-workspace dispatch` starts one worker per repository; each builds its part and opens a pull request on its repository's host | Answer questions |
-| 5. Review | Reviewers comment as usual; workers triage the threads and push fixes; changes that cross repositories go through the coordinator | Review and approve |
-| 6. Merge and roll out | Pull requests merge in the plan's order with flags off; flags turn on in order | Every merge and every flag |
+| 2. Spec | The coordinator writes one spec with you and opens it as a draft pull request in the anchor repository, ready once you call it complete | Approve and merge |
+| 3. Plan | The plan's pull request lists each repository's pull request with its merge step, the acceptance tests, the contract files, and the rollout: whether to use feature flags, where each starts, and their order | Approve and merge; the contracts lock |
+| 4. Build | `feature-workspace dispatch` starts one worker per repository; each opens a draft pull request on its repository's host right away and builds its part in it | Answer questions |
+| 5. Review | Reviewers comment on the drafts while the work happens; workers triage the threads and push fixes; changes that cross repositories go through the coordinator | Comment any time |
+| 6. Merge and roll out | Step by step through the merge order: the coordinator marks the step's finished pull requests ready, reviewers approve them, you merge them; then, if the plan uses feature flags, you change them in the order it sets | Every merge and every flag change |
 | 7. Finish | A docs pull request records the decisions and the test proof; `feature-workspace finish` cleans up | Merge |
 
 Inside a phase the agents work on their own, within the limits you set; the
@@ -253,6 +253,7 @@ participant.
 | No force pushes, no pushes to the default branch, no agent merges or approvals | guard hook (`git push --force`, `gh pr merge`, `az repos pr update --status completed`, `glab mr merge`, `tea pulls merge`, Gerrit submit and +2, REST merge/approve calls, auto-complete) | Claude Code, Copilot CLI |
 | Contract unlocks and forced cleanup are human-only | guard hook denies `feature-workspace unlock` / `finish --force` | Claude Code, Copilot CLI |
 | Tier 3 paths need your OK | `protected_paths` in the team config: Claude Code asks you; others deny with the reason | Claude Code, Copilot CLI |
+| PRs stay drafts until their merge step | Workers open drafts (H1); only the coordinator marks PRs ready (H7), step by step; `fw status` shows draft or ready per PR | all (skills) |
 | Decisions are visible | recording-decisions skill, PR template, decision log; add the CI check in [docs/team-setup.md](docs/team-setup.md) to make it deterministic | all |
 
 The guard is a guardrail against mistakes, not a security boundary; pair it
@@ -273,7 +274,7 @@ with your harness's sandbox where you have one.
 | verifying-with-proof | about to claim something works |
 | briefing-your-human-partner | status or "what happened while I was away" |
 | asking-the-team | only when you ask to involve the team |
-| finishing-a-multi-repo-feature | approvals or merges are in; rollout; cleanup |
+| finishing-a-multi-repo-feature | PRs are complete and wait for their merge step; approvals or merges are in; rollout; cleanup |
 
 If superpowers is installed too, its engineering skills (brainstorming,
 TDD, debugging, verification, code review) keep governing work inside each

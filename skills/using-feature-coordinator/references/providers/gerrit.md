@@ -50,7 +50,10 @@ REST review call, or leave it to the reviewer.
 **H6 - stacked change:** commit on top of your change; Gerrit uploads both and
 shows the dependency. Keep each change reviewable on its own.
 
-**H7 - ready for review:** `git push origin HEAD:refs/for/<default>%ready`
+**H7 - ready for review, or back to work in progress:** push the next patch
+set with `%ready` (`git push origin HEAD:refs/for/<default>%ready`) or,
+without a new patch set, REST `POST /changes/<number>/ready`. Back to work in
+progress: `%wip` on the next push, or `POST /changes/<number>/wip`.
 
 **H8 - approval rules** (project access and submit requirements, set by an
 admin): `Code-Review +2` from a human with that right, `Verified +1` from CI,

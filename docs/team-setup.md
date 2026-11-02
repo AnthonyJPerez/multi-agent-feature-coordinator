@@ -144,6 +144,16 @@ A zero-approval low-risk tier is reasonable only for authors on a trusted
 list, with automated and security review green - set it up as a separate,
 narrow rule if you want it.
 
+Feature PRs open as drafts and stay drafts until their merge step in the
+plan comes; the coordinator then marks them ready. Reviewers can comment on
+a draft at any time, and approvals are asked for once the PR is ready. Two
+host behaviors make that work without extra settings: GitHub requests code
+owners when a draft is marked ready, not before; Azure DevOps adds required
+reviewers, runs build validation policies and opens voting when a draft is
+published. If your CI skips drafts, let it run on them (or on branch pushes)
+so workers see failures while they build. On Azure DevOps, workers can queue
+a draft's build validation themselves (provider reference H7).
+
 ## 5. Make the decision block deterministic (optional)
 
 The skills put an "Assumptions & Autonomous Decisions" section in every
@@ -155,7 +165,7 @@ GitHub Actions (`.github/workflows/decision-block.yml`):
 name: decision-block
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
 jobs:
   check:
     runs-on: ubuntu-latest

@@ -33,9 +33,11 @@ provider reference for it:
    and your contract files.
 2. Write the locked contracts into your worktree and commit them on their own:
    `bash {{SCRIPT}} apply-contract {{FEATURE_ID}}`
-3. Read your messages:
+3. Push and open your draft PR now, so reviewers can comment while you
+   build (working-a-repo-slice).
+4. Read your messages:
    `bash {{SCRIPT}} mail {{FEATURE_ID}} inbox --for {{REPO}}`
-4. Follow the working-a-repo-slice skill from here.
+5. Follow the working-a-repo-slice skill from here.
 
 ## Reporting
 
@@ -45,3 +47,6 @@ provider reference for it:
   `bash {{SCRIPT}} log-decision {{FEATURE_ID}} --who {{REPO}} --tier 2 --decision "..." --why "..."`
 - Questions only a human can answer: ask your human partner directly in this
   session. Do not route them through the coordinator.
+- When your slice is complete, mail the coordinator `Complete: {{REPO}}` with
+  the PR link. Leave the PR a draft: the coordinator marks it ready when its
+  merge step comes.

@@ -220,7 +220,11 @@ assert_contains "local repo: no commits yet" "$(printf '%s\n' "$out" | grep '^| 
 assert_contains "local repo: commits but no packet" "$(printf '%s\n' "$out" | grep '^| api-svc ')" "1 commit(s), no review packet"
 printf 'Status: draft\n' >"$STATE/reviews/api-svc.md"
 out=$(fw status FEAT-1 --no-remote 2>&1)
-assert_contains "local repo: review packet" "$(printf '%s\n' "$out" | grep '^| api-svc ')" "review packet, 1 commit(s)"
+assert_contains "local repo: draft review packet" "$(printf '%s\n' "$out" | grep '^| api-svc ')" "review packet (draft), 1 commit(s)"
+printf 'Status: ready for review\n# FEAT-1: api-svc\n' >"$STATE/reviews/api-svc.md"
+assert_contains "local repo: packet marked ready" "$(fw status FEAT-1 --no-remote 2>&1 | grep '^| api-svc ')" "review packet (ready for review), 1 commit(s)"
+printf '# FEAT-1: api-svc\nStatus: draft\n' >"$STATE/reviews/api-svc.md"
+assert_contains "local repo: packet without a status line" "$(fw status FEAT-1 --no-remote 2>&1 | grep '^| api-svc ')" "review packet, 1 commit(s)"
 assert_contains "status lists the coordinator" "$out" "| coordinator | anchor |"
 assert_contains "status lists a worker" "$out" "| api-svc | worker | feature/FEAT-1 |"
 assert_contains "status shows the tracker" "$out" "Tracker: jira"

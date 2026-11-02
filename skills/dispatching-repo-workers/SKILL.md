@@ -51,9 +51,13 @@ fw dispatch <ID> --cli copilot
 Give every worker the same bounded goal, using its harness's goal or
 autopilot feature with a turn or credit cap where it has one:
 
-> PR open on `<branch>` in `<repo>`; the plan's acceptance tests for this repo
-> pass; `fw contract-check` passes; a fresh-context review has no Important
-> findings; the PR carries its decision block.
+> Draft PR open on `<branch>` in `<repo>` from the start; the plan's
+> acceptance tests for this repo pass; `fw contract-check` passes; a
+> fresh-context review has no Important findings; the PR carries its
+> decision block; "Complete" mailed to the coordinator.
+
+The PR is still a draft when the goal is met: you mark it ready when its
+merge step comes (finishing-a-multi-repo-feature).
 
 Workers stop and ask their human partner on anything Tier 3.
 

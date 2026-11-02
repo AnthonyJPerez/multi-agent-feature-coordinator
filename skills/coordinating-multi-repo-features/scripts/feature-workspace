@@ -1004,17 +1004,22 @@ pr_summary() {
       command -v glab >/dev/null 2>&1 || { printf 'n/a (no glab)'; return; }
       path=$(fc_gitlab_path "$main") || { printf 'n/a'; return; }
       out=$(glab mr list -R "$path" --source-branch "$branch" --all -F json 2>/dev/null) || { printf '?'; return; }
-      # The first "iid" and "state" in the array belong to the newest MR.
-      n=$(printf '%s' "$out" | grep -o '"iid": *[0-9]*' | head -n 1 | tr -dc '0-9' || true)
-      st=$(printf '%s' "$out" | grep -o '"state": *"[a-z_]*"' | head -n 1 | sed 's/.*"\([a-z_]*\)"$/\1/' || true)
-      if [ -n "$n" ]; then printf '!%s %s' "$n" "$st"; else printf 'none'; fi
+      fc_gitlab_mr_line "$out"
       ;;
     local | other)
       # No pull-request system: the review packet plus what git knows.
       default=$(fc_default_branch "$main")
       n=$(git -C "$main" rev-list --count "$default..$branch" 2>/dev/null || printf '?')
       if [ -n "$state" ] && [ -f "$state/reviews/$who.md" ]; then
-        if [ "$n" = 0 ]; then printf 'merged into %s' "$default"; else printf 'review packet, %s commit(s)' "$n"; fi
+        # The packet's first line carries its state (provider reference H1, H7).
+        st=$(sed -n '1s/^Status:[[:space:]]*//p' "$state/reviews/$who.md" | tr -d '\r|' | cut -c1-40)
+        if [ "$n" = 0 ]; then
+          printf 'merged into %s' "$default"
+        elif [ -n "$st" ]; then
+          printf 'review packet (%s), %s commit(s)' "$st" "$n"
+        else
+          printf 'review packet, %s commit(s)' "$n"
+        fi
       else
         if [ "$n" = 0 ]; then printf 'no commits yet'; else printf '%s commit(s), no review packet' "$n"; fi
       fi
