@@ -178,6 +178,9 @@ plugin runs locally across repos on any mix of git hosts.
   first stop on a failing gate and let the second stop on the same state
   through. The same test showed `hooks/run-hook.cmd` must keep its
   executable bit.
+- CI runs the whole suite on Linux (bash 5, gawk) and on macOS with the
+  stock `/bin/bash` 3.2 and one-true-awk 20200816; the JSON parser is also
+  tested locally under mawk and busybox awk.
 - Session-start output shapes (one field only - Claude Code reads both
   `additional_context` and `hookSpecificOutput` without de-duplicating)
   follow superpowers 7.0.1.

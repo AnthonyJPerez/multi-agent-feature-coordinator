@@ -1,5 +1,7 @@
 # feature-coordinator
 
+[![tests](https://github.com/AnthonyJPerez/multi-agent-feature-coordinator/actions/workflows/test.yml/badge.svg)](https://github.com/AnthonyJPerez/multi-agent-feature-coordinator/actions/workflows/test.yml)
+
 Run one feature across many repositories with coding agents, **locally**, on
 your own machine, **whatever git host each repository lives on**.
 
@@ -216,7 +218,8 @@ bash tests/run-all.sh                 # hooks, workspace script, manifests, skil
 claude plugin validate . --strict     # if Claude Code is installed
 ```
 
-See [AGENTS.md](AGENTS.md) for conventions and [docs/porting.md](docs/porting.md)
+CI runs the suite on Linux and on macOS's stock bash 3.2 and awk. See
+[AGENTS.md](AGENTS.md) for conventions and [docs/porting.md](docs/porting.md)
 for adding a harness or a provider.
 
 ## License
