@@ -251,6 +251,10 @@ fc_json_bool() {
 
 fc_json_escape() {
   local s="$1"
+  # JSON forbids raw control characters; drop all but tab, newline and CR,
+  # which are escaped below. The trailing x keeps trailing newlines.
+  s=$(printf '%s' "$s" | LC_ALL=C tr -d '\000-\010\013\014\016-\037'; printf x)
+  s="${s%x}"
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
   s="${s//$'\n'/\\n}"

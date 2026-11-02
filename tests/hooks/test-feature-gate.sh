@@ -87,4 +87,52 @@ out=$(stop "$W")
 assert_eq "after three blocks in a row the stop goes through" "$(decision "$out")" ""
 assert_contains "and says so" "$out" "after 3 blocked attempts"
 
+
+section "regressions from review"
+regate() { fw start S-1 --anchor anchor --repo svc --gate "svc=$1" >/dev/null 2>&1; }
+regate "printf '\\033[31mFAIL\\033[0m colored\\n'; exit 1"
+printf 'c1\n' >>"$W/change.txt"
+out=$(stop "$W")
+body="${out%rc=*}"
+if json_ok "$body"; then pass "colored gate output still gives valid JSON"; else fail "colored gate output still gives valid JSON" "$body"; fi
+assert_eq "colored failure blocks" "$(decision "$out")" "block"
+assert_contains "log tail is readable" "$out" "FAIL colored"
+
+regate "sleep 6; exit 1"
+for mode in coreutils portable; do
+  printf '%s\n' "$mode" >>"$W/change.txt"
+  start=$(date +%s)
+  if [ "$mode" = portable ]; then
+    out=$(stop "$W" FC_GATE_TIMEOUT=2 FC_GATE_PORTABLE_TIMEOUT=1)
+  else
+    out=$(stop "$W" FC_GATE_TIMEOUT=2)
+  fi
+  took=$(($(date +%s) - start))
+  if [ "$took" -le 5 ]; then pass "$mode time limit enforced (${took}s)"; else fail "$mode time limit enforced (${took}s)"; fi
+  assert_eq "$mode: a timeout does not block" "$(decision "$out")" ""
+  assert_contains "$mode: a timeout is reported" "$out" "did not finish within 2s"
+  start=$(date +%s)
+  out=$(stop "$W" FC_GATE_TIMEOUT=2)
+  took=$(($(date +%s) - start))
+  if [ "$took" -le 1 ]; then pass "$mode: same state does not rerun the gate"; else fail "$mode: same state does not rerun the gate (${took}s)"; fi
+done
+# Match whole command lines only, so this test's own shell never counts.
+if command -v pgrep >/dev/null 2>&1 && pgrep -f '^(bash -c )?sleep 6(; exit 1)?$' >/dev/null; then
+  fail "no gate process left running"
+else
+  pass "no gate process left running"
+fi
+
+regate "exit 1"
+cat >"$TEST_ROOT/bin/cygpath" <<EOF
+#!/usr/bin/env bash
+p="\$2"; p="\${p#C:\\\\fc\\\\}"; p="\${p//\\\\//}"
+printf '%s\n' "$WS/\$p"
+EOF
+chmod +x "$TEST_ROOT/bin/cygpath"
+printf 'win\n' >>"$W/change.txt"
+out=$(printf '{"cwd":"x","hook_event_name":"Stop"}' | env CLAUDE_PROJECT_DIR='C:\fc\svc\.worktrees\S-1' bash "$HOOK" 2>/dev/null; echo "rc=$?")
+assert_eq "Windows project dir still gates the worker" "$(decision "$out")" "block"
+rm -f "$TEST_ROOT/bin/cygpath"
+
 finish_tests

@@ -39,6 +39,7 @@ payload_cwd=$(fc_json_get "$PAYLOAD" cwd 2>/dev/null) || payload_cwd=""
 # wandered: the launcher exports FC_SESSION_WORKTREE; Claude Code exports
 # CLAUDE_PROJECT_DIR.
 IDENTITY_DIR="${FC_SESSION_WORKTREE:-${CLAUDE_PROJECT_DIR:-${payload_cwd:-$PWD}}}"
+IDENTITY_DIR=$(fc_to_unix "$IDENTITY_DIR")
 case "$IDENTITY_DIR" in */.worktrees/*) ;; *) exit 0 ;; esac
 fc_feature_context "$IDENTITY_DIR" || exit 0
 
@@ -85,13 +86,20 @@ inside_repo() {
 
 # ask_human REASON - Tier 3 path: Claude Code asks your human partner in its
 # permission prompt; harnesses without an "ask" decision deny with the reason.
+# Recorded, not emitted: every other path is still judged first, so a deny wins.
+ASK_REASON=""
 ask_human() {
+  [ -n "$ASK_REASON" ] || ASK_REASON="$1"
+}
+
+finish_ask() {
+  [ -n "$ASK_REASON" ] || return 0
   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ] && [ -z "${CURSOR_PLUGIN_ROOT:-}" ]; then
     printf '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": "%s"}}\n' \
-      "$(fc_json_escape "feature-coordinator: $1 Tier 3 - your human partner decides.")"
+      "$(fc_json_escape "feature-coordinator: $ASK_REASON Tier 3 - your human partner decides.")"
     exit 0
   fi
-  deny "$1" "This is a Tier 3 path for your team: stop and ask your human partner. They can make or approve the change themselves."
+  deny "$ASK_REASON" "This is a Tier 3 path for your team: stop and ask your human partner. They can make or approve the change themselves."
 }
 
 # judge PATH WHAT - deny when PATH may not be written by this session
@@ -101,10 +109,10 @@ judge() {
   case "$raw" in /dev/* | -) return 0 ;; esac
   raw="${raw//\$\{HOME\}/$HOME}"
   raw="${raw//\$HOME/$HOME}"
-  raw="${raw//\$\{PWD\}/$BASE_DIR}"
-  raw="${raw//\$PWD/$BASE_DIR}"
+  raw="${raw//\$\{PWD\}/${CURDIR:-$BASE_DIR}}"
+  raw="${raw//\$PWD/${CURDIR:-$BASE_DIR}}"
   case "$raw" in *'$'* | *'`'*) return 0 ;; esac
-  p=$(fc_canon "$raw" "$BASE_DIR")
+  p=$(fc_canon "$raw" "${CURDIR:-$BASE_DIR}")
   shown="${p%/.fc-probe}"
   if fc_is_within "$p" "$OWN"; then
     rel="${p#"$OWN"/}"
@@ -201,8 +209,44 @@ tokenize() {
   tok_flush
 }
 
+# take_subst - at s[i] ("$(" or a backtick): record the body in SUBCMDS, add
+# it to the current word and move i past it. Works on tokenize_line's s, i, n
+# and tw (bash functions see their caller's locals).
+take_subst() {
+  local part depth start chunk
+  if [ "${s:i:1}" = "$BQ" ]; then
+    part="${s:i+1}"
+    part="${part%%"$BQ"*}"
+    SUBCMDS[${#SUBCMDS[@]}]="$part"
+    tw="$tw$BQ$part$BQ"
+    i=$((i + ${#part} + 2))
+  else
+    depth=0
+    start=$((i + 2))
+    i=$((i + 1))
+    while [ "$i" -lt "$n" ]; do
+      part="${s:i}"
+      chunk="${part%%[()]*}"
+      i=$((i + ${#chunk}))
+      [ "$i" -lt "$n" ] || break
+      if [ "${s:i:1}" = '(' ]; then
+        depth=$((depth + 1))
+      else
+        depth=$((depth - 1))
+        [ "$depth" -eq 0 ] && break
+      fi
+      i=$((i + 1))
+    done
+    part="${s:start:i-start}"
+    SUBCMDS[${#SUBCMDS[@]}]="$part"
+    tw="$tw\$($part)"
+    i=$((i + 1))
+  fi
+  tw_in=1
+}
+
 tokenize_line() {
-  local s="$1" i=0 n=${#1} c nx depth start part chunk
+  local s="$1" i=0 n=${#1} c nx part chunk
   while [ "$i" -lt "$n" ]; do
     if [ "$q" = "'" ]; then
       part="${s:i}"
@@ -218,18 +262,28 @@ tokenize_line() {
     fi
     if [ "$q" = '"' ]; then
       part="${s:i}"
-      chunk="${part%%[\"\\]*}"
+      chunk="${part%%[\"\\\$\`]*}"
       tw="$tw$chunk"
       i=$((i + ${#chunk}))
       [ "$i" -lt "$n" ] || return 0
-      if [ "${s:i:1}" = '\' ]; then
+      c="${s:i:1}"
+      if [ "$c" = '\' ]; then
         tw="$tw${s:i+1:1}"
         i=$((i + 2))
-      else
+      elif [ "$c" = '"' ]; then
         q=""
+        i=$((i + 1))
+      elif [ "$c" = "$BQ" ] || [ "${s:i+1:1}" = '(' ]; then
+        take_subst
+      else
+        tw="$tw$c"
         i=$((i + 1))
       fi
       continue
+    fi
+    # A "#" that starts a word starts a comment, which runs to the end of the line.
+    if [ "$tw_in" = 0 ] && [ "${s:i:1}" = '#' ]; then
+      return 0
     fi
     part="${s:i}"
     chunk="${part%%[\'\"\\\$\`$' \t;|&()<>']*}"
@@ -257,35 +311,7 @@ tokenize_line() {
         ;;
       '$' | "$BQ")
         if [ "$c" = "$BQ" ] || [ "$nx" = '(' ]; then
-          if [ "$c" = "$BQ" ]; then
-            part="${s:i+1}"
-            part="${part%%"$BQ"*}"
-            SUBCMDS[${#SUBCMDS[@]}]="$part"
-            tw="$tw$BQ$part$BQ"
-            i=$((i + ${#part} + 2))
-          else
-            depth=0
-            start=$((i + 2))
-            i=$((i + 1))
-            while [ "$i" -lt "$n" ]; do
-              part="${s:i}"
-              chunk="${part%%[()]*}"
-              i=$((i + ${#chunk}))
-              [ "$i" -lt "$n" ] || break
-              if [ "${s:i:1}" = '(' ]; then
-                depth=$((depth + 1))
-              else
-                depth=$((depth - 1))
-                [ "$depth" -eq 0 ] && break
-              fi
-              i=$((i + 1))
-            done
-            part="${s:start:i-start}"
-            SUBCMDS[${#SUBCMDS[@]}]="$part"
-            tw="$tw\$($part)"
-            i=$((i + 1))
-          fi
-          tw_in=1
+          take_subst
           continue
         fi
         tw="$tw$c"
@@ -294,9 +320,14 @@ tokenize_line() {
       ' ' | $'\t')
         tok_flush
         ;;
-      ';' | '(' | ')' | '|')
+      ';' | '|')
         tok_flush
         TOKS[${#TOKS[@]}]=";"
+        ;;
+      '(' | ')')
+        # Subshell boundaries: analyze_command scopes cd inside them.
+        tok_flush
+        TOKS[${#TOKS[@]}]="$c"
         ;;
       '&')
         if [ "$nx" = '>' ]; then
@@ -352,6 +383,8 @@ tokenize_line() {
 
 DEPTH=0
 CURDIR=""
+OLDDIR=""
+FC_DIRS=()
 
 is_default_branch() {  # NAME REPO_DIR
   local b="$1" repo="$2" def
@@ -424,7 +457,11 @@ analyze_push() {  # REPO_DIR ARGS...
       *)
         pos=$((pos + 1))
         [ "$pos" -eq 1 ] && continue
-        case "$a" in +*) deny "git push $a (force refspec) is not allowed for feature sessions." ;; esac
+        case "$a" in
+          +*) deny "git push $a (force refspec) is not allowed for feature sessions." ;;
+          :*) deny "git push $a deletes a remote branch." "Ask your human partner to delete remote branches." ;;
+          *%submit* | *%*,submit*) deny "git push $a submits the change in Gerrit: merging is your human partner's call." ;;
+        esac
         dst="${a##*:}"
         [ "$dst" = HEAD ] && dst=$(git -C "$repo" branch --show-current 2>/dev/null || true)
         if is_default_branch "$dst" "$repo"; then
@@ -467,17 +504,70 @@ analyze_git() {  # ARGS... (after "git")
   return 0
 }
 
+# analyze_http TOOL ARGS... - REST calls that merge or approve a pull request,
+# on any host: curl, wget, httpie, gh api, glab api, az rest, tea api.
+analyze_http() {
+  local tool="$1" a prev="" method="" data=0 joined urls=() u
+  shift
+  joined=" $* "
+  for a in "$@"; do
+    case "$prev" in
+      -X | --request | --method) method="$a" ;;
+      -m) [ "$tool" = az ] && method="$a" ;;   # az rest -m; curl -m is --max-time
+    esac
+    case "$a" in
+      -X?*) method="${a#-X}" ;;
+      --request=* | --method=*) method="${a#*=}" ;;
+      -d | --data | --data-* | --data=* | --json | --json=* | --form | --form=* | -T | --upload-file | \
+        --post-data* | --post-file* | --body | --body=* | --in-file | --input | --input=* | \
+        --raw-field | --raw-field=* | --field | --field=*)
+        data=1 ;;
+      -b) [ "$tool" = az ] && data=1 ;;           # az rest --body; curl -b is a cookie
+      -f) [ "$tool" = gh ] && data=1 ;;           # gh api field; curl -f is --fail
+      -F) case "$tool" in gh | curl) data=1 ;; esac ;;
+      GET | POST | PUT | PATCH | DELETE | get | post | put | patch | delete)
+        case "$tool" in http | https | xh) method="$a" ;; esac ;;
+    esac
+    case "$a" in
+      *pullrequests/* | *pulls/* | *merge_requests/* | *pullRequests/* | *pullrequest/* | */changes/*) urls[${#urls[@]}]="$a" ;;
+    esac
+    prev="$a"
+  done
+  method=$(lower "$method")
+  if [ -z "$method" ]; then
+    if [ "$data" = 1 ]; then method="post"; else method="get"; fi
+  fi
+  [ "$method" = get ] && return 0
+  for u in ${urls[@]+"${urls[@]}"}; do
+    u="${u%%\?*}"
+    case "$u" in
+      */pulls/*/merge | */pullrequests/*/merge | */merge_requests/*/merge | */pulls/*/merge/ | */changes/*/submit | \
+        */pullRequests/*/merge)
+        deny "$tool $method $u merges a pull request: that is your human partner's call." ;;
+      */pullrequests/*/approve | */merge_requests/*/approve | */merge_requests/*/approvals | */changes/*/revisions/*/review)
+        case "$u" in
+          */review) case "$joined" in *Code-Review*2* | *'"labels"'*) deny "$tool $method $u votes on a Gerrit change: an agent's vote never counts." ;; esac ;;
+          *) deny "$tool $method $u approves a pull request: an agent approval never counts." ;;
+        esac ;;
+      */pulls/*/reviews)
+        case "$joined" in *APPROVE*) deny "$tool $method $u approves a pull request: an agent approval never counts." ;; esac ;;
+      */pullRequests/*)
+        case "$joined" in
+          *completed* | *autoCompleteSetBy*) deny "$tool $method $u completes (merges) an Azure Repos pull request: your human partner's call." ;;
+          *'"vote"'*) deny "$tool $method $u votes on an Azure Repos pull request: an agent approval never counts." ;;
+        esac ;;
+    esac
+  done
+  return 0
+}
+
 analyze_gh() {
-  local a joined=" $* "
+  local joined=" $* "
   case "${1:-} ${2:-}" in
     "pr merge") deny "gh pr merge: merging pull requests is your human partner's call." "Mark the PR ready and tell your human partner it is ready to merge." ;;
     "pr review")
       case "$joined" in *" --approve "* | *" -a "*) deny "gh pr review --approve: an agent approval never counts." "Reviews need a human approver." ;; esac ;;
-    "api "*)
-      case "$joined" in
-        */merge*) case "$joined" in *" -X PUT "* | *" --method PUT "* | *" -XPUT "*) deny "gh api ... /merge: merging pull requests is your human partner's call." ;; esac ;;
-      esac
-      for a in "$@"; do case "$a" in */pulls/*/merge) deny "gh api $a: merging pull requests is your human partner's call." ;; esac; done ;;
+    "api "*) shift; analyze_http gh "$@" ;;
   esac
   return 0
 }
@@ -499,6 +589,9 @@ analyze_az() {
         *" --auto-complete true "* | *" --auto-complete=true "*) deny "az repos pr create --auto-complete: setting a PR to merge itself is your human partner's call." ;;
       esac ;;
   esac
+  case "${1:-}" in
+    rest | devops) shift; analyze_http az "$@" ;;
+  esac
   return 0
 }
 
@@ -506,6 +599,30 @@ analyze_glab() {
   case "${1:-} ${2:-}" in
     "mr merge") deny "glab mr merge: merging merge requests is your human partner's call." ;;
     "mr approve") deny "glab mr approve: an agent approval never counts." "Reviews need a human approver." ;;
+  esac
+  [ "${1:-}" = api ] && { shift; analyze_http glab "$@"; }
+  return 0
+}
+
+# Gitea / Forgejo (tea), Gerrit (ssh ... gerrit review / submit)
+analyze_tea() {
+  case "${1:-} ${2:-}" in
+    "pulls merge" | "pr merge" | "pull merge") deny "tea $1 merge: merging pull requests is your human partner's call." ;;
+    "pulls approve" | "pr approve" | "pull approve" | "pulls lgtm" | "pr lgtm") deny "tea $1 $2: an agent approval never counts." ;;
+  esac
+  [ "${1:-}" = api ] && { shift; analyze_http tea "$@"; }
+  return 0
+}
+
+analyze_gerrit_ssh() {  # ARGS of an ssh command line
+  local joined=" $* "
+  case "$joined" in
+    *" gerrit review "*)
+      case "$joined" in
+        *" --submit "* | *" -s "*) deny "gerrit review --submit: submitting (merging) a change is your human partner's call." ;;
+        *"Code-Review=+2"* | *"Code-Review=2"* | *" --code-review +2"* | *" --code-review 2"*) deny "gerrit review Code-Review+2: an agent's vote never counts." ;;
+      esac ;;
+    *" gerrit submit "*) deny "gerrit submit: submitting (merging) a change is your human partner's call." ;;
   esac
   return 0
 }
@@ -549,8 +666,29 @@ analyze_segment() {
       GIT_DIR=*) SEG_GIT_DIR="${w#GIT_DIR=}" ;;
       GIT_WORK_TREE=*) SEG_WORK_TREE="${w#GIT_WORK_TREE=}" ;;
       [A-Za-z_]*=*) ;;
-      sudo | command | builtin | exec | nohup | time | nice | env | xargs | '!' | '{' | '}' | then | do | else | \
-        if | while | until | elif | fi | done | -*) ;;
+      timeout)
+        # timeout [options] DURATION COMMAND...
+        i=$((i + 1))
+        while [ "$i" -lt "$n" ]; do
+          case "${args[i]}" in
+            -s | -k | --signal | --kill-after) i=$((i + 2)) ;;
+            -*) i=$((i + 1)) ;;
+            *) break ;;
+          esac
+        done
+        ;;
+      nice) [ "${args[i+1]:-}" = -n ] && i=$((i + 2)) ;;
+      sudo | doas)
+        while [ $((i + 1)) -lt "$n" ]; do
+          case "${args[i+1]}" in
+            -u | -g | -U | -C | -h | -p | -D) i=$((i + 2)) ;;
+            -*) i=$((i + 1)) ;;
+            *) break ;;
+          esac
+        done
+        ;;
+      command | builtin | exec | nohup | time | env | xargs | stdbuf | ionice | '!' | '{' | '}' | then | do | \
+        else | if | while | until | elif | fi | done | -*) ;;
       *) break ;;
     esac
     i=$((i + 1))
@@ -561,15 +699,31 @@ analyze_segment() {
   set -- ${args[@]+"${args[@]:i+1}"}
   case "$base" in
     cd | pushd)
-      case "${1:-}" in
-        '' | '~') CURDIR="$HOME" ;;
-        -*) ;;
-        *) CURDIR=$(fc_normpath "$1" "$CURDIR") ;;
-      esac ;;
+      local target="" newdir
+      for w in "$@"; do case "$w" in -L | -P | -e | -@ | -n) ;; *) target="$w"; break ;; esac; done
+      case "$target" in
+        '' | '~') newdir="$HOME" ;;
+        -) newdir="${OLDDIR:-$CURDIR}" ;;
+        [+-][0-9]*) return 0 ;;
+        *) newdir=$(fc_normpath "$target" "$CURDIR") ;;
+      esac
+      [ "$base" = pushd ] && FC_DIRS[${#FC_DIRS[@]}]="$CURDIR"
+      OLDDIR="$CURDIR"
+      CURDIR="$newdir"
+      ;;
+    popd)
+      if [ "${#FC_DIRS[@]}" -gt 0 ]; then
+        OLDDIR="$CURDIR"
+        CURDIR="${FC_DIRS[${#FC_DIRS[@]}-1]}"
+        unset "FC_DIRS[${#FC_DIRS[@]}-1]"
+      fi ;;
     git) analyze_git "$@" ;;
     gh) analyze_gh "$@" ;;
     az) analyze_az "$@" ;;
     glab) analyze_glab "$@" ;;
+    tea) analyze_tea "$@" ;;
+    ssh) analyze_gerrit_ssh "$@" ;;
+    curl | wget | http | https | xh) analyze_http "$base" "$@" ;;
     feature-workspace) analyze_fw "$@" ;;
     bash | sh | zsh | dash | ksh)
       while [ "$#" -gt 0 ]; do
@@ -622,22 +776,35 @@ analyze_segment() {
 }
 
 analyze_command() {  # CMD
-  local cmd="$1" seg=() t subs saved_toks
+  local cmd="$1" seg=() t subs saved_toks scope=() start_dir="$CURDIR" saved
   DEPTH=$((DEPTH + 1))
   SUBCMDS=()
   tokenize "$cmd"
   subs=(${SUBCMDS[@]+"${SUBCMDS[@]}"})
   saved_toks=(${TOKS[@]+"${TOKS[@]}"})
   for t in ${saved_toks[@]+"${saved_toks[@]}"} ";"; do
-    if [ "$t" = ";" ]; then
-      [ "${#seg[@]}" -gt 0 ] && analyze_segment "${seg[@]}"
-      seg=()
-    else
-      seg[${#seg[@]}]="$t"
-    fi
+    case "$t" in
+      ";" | "(" | ")")
+        if [ "${#seg[@]}" -gt 0 ]; then analyze_segment "${seg[@]}"; fi
+        seg=()
+        # A cd inside ( ... ) does not outlive the subshell.
+        if [ "$t" = "(" ]; then
+          scope[${#scope[@]}]="$CURDIR"
+        elif [ "$t" = ")" ] && [ "${#scope[@]}" -gt 0 ]; then
+          CURDIR="${scope[${#scope[@]}-1]}"
+          unset "scope[${#scope[@]}-1]"
+        fi
+        ;;
+      *) seg[${#seg[@]}]="$t" ;;
+    esac
   done
   if [ "$DEPTH" -lt 3 ]; then
-    for t in ${subs[@]+"${subs[@]}"}; do analyze_command "$t"; done
+    for t in ${subs[@]+"${subs[@]}"}; do
+      saved="$CURDIR"
+      CURDIR="$start_dir"
+      analyze_command "$t"
+      CURDIR="$saved"
+    done
   fi
   DEPTH=$((DEPTH - 1))
 }
@@ -680,7 +847,7 @@ json_values() {
 }
 
 patch_paths() {  # PATCH TEXT -> one path per line
-  printf '%s\n' "$1" | sed -n -e 's/^\*\*\* \(Add\|Update\|Delete\) File: //p' -e 's/^\*\*\* Move to: //p'
+  printf '%s\n' "$1" | sed -n -E -e 's/^\*\*\* (Add|Update|Delete) File: //p' -e 's/^\*\*\* Move to: //p'
 }
 
 check_patch_text() {
@@ -711,9 +878,12 @@ case "$tool" in
     while IFS= read -r -d '' v; do
       check_patch_text "$v"
       CURDIR="$BASE_DIR"
+      OLDDIR=""
+      FC_DIRS=()
       analyze_command "$v"
     done < <(json_values command; json_values cmd)
     ;;
 esac
 
+finish_ask
 exit 0

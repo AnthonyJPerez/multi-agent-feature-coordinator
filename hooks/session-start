@@ -18,6 +18,8 @@ PROVIDERS="${SKILLS}/using-feature-coordinator/references/providers"
 
 escape_for_json() {
   local s="$1"
+  s=$(printf '%s' "$s" | LC_ALL=C tr -d '\000-\010\013\014\016-\037'; printf x)
+  s="${s%x}"
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
   s="${s//$'\n'/\\n}"

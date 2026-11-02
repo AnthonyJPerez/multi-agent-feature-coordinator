@@ -156,4 +156,63 @@ expect "large here-document" 0 "$(bash_cmd "$A" "$long")"
 took=$(($(date +%s) - start))
 if [ "$took" -le 3 ]; then pass "large command analysed in ${took}s"; else fail "large command analysed in ${took}s (limit 3s)"; fi
 
+
+section "regressions from review"
+expect "relative redirect after cd into a sibling" 2 "$(bash_cmd "$A" "cd $B && echo hi > notes.txt")"
+expect "relative rm after cd into a sibling" 2 "$(bash_cmd "$A" "cd $B && rm -rf build")"
+expect "relative sed -i after cd into a sibling" 2 "$(bash_cmd "$A" "cd $B && sed -i 's/a/b/' src/x.go")"
+expect "relative write after cd inside" 0 "$(bash_cmd "$A" "mkdir -p src && cd src && echo hi > notes.txt")"
+expect "apostrophe in a comment" 2 "$(bash_cmd "$A" "# Let's update svc-b too
+cp client.go $B/client.go")"
+expect "apostrophe in a coordinator comment" 2 "$(bash_cmd "$C" "# Coordinator's sync
+git -C $A push --force origin HEAD")"
+expect "trailing comment is ignored" 0 "$(bash_cmd "$A" "echo hi # don't worry")"
+expect "deny wins over a protected-path ask" 2 "$(bash_cmd "$A" "sed -i 's/v1/v2/' src/auth/token.go $B/src/auth/token.go")"
+expect "deny wins in either order" 2 "$(bash_cmd "$A" "sed -i 's/v1/v2/' $B/src/auth/token.go src/auth/token.go")"
+out=$(bash_cmd "$A" "sed -i 's/v1/v2/' src/auth/token.go")
+assert_contains "protected path alone still asks" "$out" '"permissionDecision": "ask"'
+expect "cd inside a subshell does not leak" 0 "$(bash_cmd "$A" "(cd $B && git log -1) && git commit -am wip")"
+expect "pushd and popd" 0 "$(bash_cmd "$A" "pushd $B && git log && popd && git commit -am wip")"
+expect "cd -" 0 "$(bash_cmd "$A" "cd $B && git diff; cd - && git commit -am wip")"
+expect "pushd then commit in the sibling" 2 "$(bash_cmd "$A" "pushd $B && git commit -am wip")"
+expect "command substitution inside double quotes" 2 "$(bash_cmd "$A" "echo \"\$(git -C $B commit -am wip)\"")"
+expect "backticks inside double quotes" 2 "$(bash_cmd "$A" "echo \"\`touch $B/t\`\"")"
+expect "push deleting a remote branch" 2 "$(bash_cmd "$A" "git push origin :feat/G-1")"
+expect "timeout wrapper" 2 "$(bash_cmd "$A" "timeout 60 git push --force origin HEAD")"
+expect "timeout with options" 2 "$(bash_cmd "$A" "timeout -k 5 60 git push --force origin HEAD")"
+expect "nice wrapper" 2 "$(bash_cmd "$A" "nice -n 10 git push --force origin HEAD")"
+expect "sudo -u wrapper" 2 "$(bash_cmd "$A" "sudo -u bob git push -f origin HEAD")"
+expect "Bitbucket merge over REST" 2 "$(bash_cmd "$A" "curl -X POST -u \"\$U:\$T\" https://api.bitbucket.org/2.0/repositories/w/r/pullrequests/12/merge")"
+expect "Bitbucket approve over REST" 2 "$(bash_cmd "$A" "curl -s -X POST https://api.bitbucket.org/2.0/repositories/w/r/pullrequests/12/approve")"
+expect "GitHub merged-check over REST is a read" 0 "$(bash_cmd "$A" "curl -sf -m 30 https://api.github.com/repos/o/r/pulls/12/merge")"
+expect "GitHub merge over REST" 2 "$(bash_cmd "$A" "curl -X PUT https://api.github.com/repos/o/r/pulls/12/merge")"
+expect "gh api approve review" 2 "$(bash_cmd "$A" "gh api repos/o/r/pulls/12/reviews -f event=APPROVE")"
+expect "gh api merged-check" 0 "$(bash_cmd "$A" "gh api repos/o/r/pulls/12/merge")"
+expect "glab api merge" 2 "$(bash_cmd "$A" "glab api --method PUT projects/:id/merge_requests/3/merge")"
+expect "az rest complete" 2 "$(bash_cmd "$A" "az rest --method patch --url https://dev.azure.com/o/p/_apis/git/repositories/r/pullRequests/5 --body '{\"status\": \"completed\"}'")"
+expect "tea merge" 2 "$(bash_cmd "$A" "tea pr merge 4")"
+expect "tea approve" 2 "$(bash_cmd "$A" "tea pulls approve 4")"
+expect "tea create" 0 "$(bash_cmd "$A" "tea pulls create --head feat/G-1 --base main --title x")"
+expect "Gerrit submit over ssh" 2 "$(bash_cmd "$A" "ssh -p 29418 review.example.com gerrit review --submit 123,1")"
+expect "Gerrit +2 over ssh" 2 "$(bash_cmd "$A" "ssh -p 29418 review.example.com gerrit review --code-review +2 123,1")"
+expect "Gerrit change upload" 0 "$(bash_cmd "$A" "git push origin HEAD:refs/for/main")"
+expect "Gerrit submit on push" 2 "$(bash_cmd "$A" "git push origin HEAD:refs/for/main%submit")"
+expect "apply_patch Add File outside" 2 "$(claude "$A" apply_patch "{\"input\":$(json_escape "*** Begin Patch
+*** Add File: $B/new.go
++package x
+*** End Patch")}")"
+
+# Windows-style identity: a stand-in cygpath maps C:\fc\... onto the workspace
+cat >"$TEST_ROOT/bin/cygpath" <<EOF
+#!/usr/bin/env bash
+p="\$2"; p="\${p#C:\\\\fc\\\\}"; p="\${p//\\\\//}"
+printf '%s\n' "$WS/\$p"
+EOF
+chmod +x "$TEST_ROOT/bin/cygpath"
+WIN_A='C:\fc\svc-a\.worktrees\G-1'
+out=$(printf '{"cwd":"%s","tool_name":"Edit","tool_input":{"file_path":"%s"}}' 'C:\\fc\\svc-a\\.worktrees\\G-1' 'C:\\fc\\svc-b\\.worktrees\\G-1\\x.go' |
+  env CLAUDE_PROJECT_DIR="$WIN_A" bash "$HOOK" 2>/dev/null; echo "rc=$?")
+expect "Windows project dir still identifies the session" 2 "$out"
+rm -f "$TEST_ROOT/bin/cygpath"
+
 finish_tests

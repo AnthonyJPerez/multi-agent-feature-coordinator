@@ -235,6 +235,34 @@ assert_eq "branch deleted" "$(git -C "$WS/api-svc" branch --list feature/FEAT-1)
 assert_no_file "state moved" "$STATE"
 assert_contains "state archived" "$(ls "$WS/.feature/_archive")" "FEAT-1-"
 
+
+section "regressions from review"
+WS2=$(make_workspace regress anchor svc)
+cd "$WS2" || exit 1
+git -C svc checkout -q -b feat/X-1
+out=$(fw start X-1 --anchor anchor --repo svc 2>&1); rc=$?
+assert_rc "start stops when a worktree cannot be created" "$rc" 1 "$out"
+assert_contains "and says why" "$out" "could not create"
+git -C svc checkout -q main
+out=$(cd "$WS2/anchor" && fw start D-1 --anchor . --repo ../svc 2>&1); rc=$?
+assert_rc "start with --anchor ." "$rc" 0 "$out"
+assert_file "state lands in the workspace" "$WS2/.feature/D-1/feature.env"
+assert_no_file "not inside the anchor repo" "$WS2/anchor/.feature"
+out=$(cd "$WS2" && fw status D-1 --no-remote 2>&1); rc=$?
+assert_rc "status finds it from the workspace" "$rc" 0 "$out"
+git -C "$WS2/svc" worktree lock "$WS2/svc/.worktrees/D-1"
+out=$(cd "$WS2" && fw finish D-1 2>&1); rc=$?
+assert_rc "finish reports a worktree it cannot remove" "$rc" 1 "$out"
+assert_contains "names it" "$out" "Could not remove the worktree of: svc"
+assert_file "keeps that repo's record" "$WS2/svc/.git/feature-coordinator/D-1.env"
+assert_file "keeps the feature state" "$WS2/.feature/D-1/feature.env"
+assert_no_file "still cleans the others" "$WS2/anchor/.worktrees/D-1"
+git -C "$WS2/svc" worktree unlock "$WS2/svc/.worktrees/D-1"
+out=$(cd "$WS2" && fw finish D-1 2>&1); rc=$?
+assert_rc "finish completes on the second run" "$rc" 0 "$out"
+assert_no_file "state archived after the second run" "$WS2/.feature/D-1"
+cd "$WS" || exit 1
+
 section "code host detection"
 mk_remote_repo() {  # NAME URL
   git init -q "$TEST_ROOT/hosts/$1"

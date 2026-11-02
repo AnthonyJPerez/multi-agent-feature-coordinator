@@ -29,6 +29,7 @@ LIB="${PLUGIN_ROOT}/skills/coordinating-multi-repo-features/scripts/fc-lib"
 PAYLOAD=$(cat 2>/dev/null)
 payload_cwd=$(fc_json_get "$PAYLOAD" cwd 2>/dev/null) || payload_cwd=""
 IDENTITY_DIR="${FC_SESSION_WORKTREE:-${CLAUDE_PROJECT_DIR:-${payload_cwd:-$PWD}}}"
+IDENTITY_DIR=$(fc_to_unix "$IDENTITY_DIR")
 case "$IDENTITY_DIR" in */.worktrees/*) ;; *) exit 0 ;; esac
 fc_feature_context "$IDENTITY_DIR" || exit 0
 [ "$FC_ROLE" = worker ] || exit 0
@@ -41,7 +42,10 @@ FAIL="$GATES/$FC_WHO.fail"
 BLOCKS="$GATES/$FC_WHO.blocks"
 LOG="$GATES/$FC_WHO.log"
 MAX_BLOCKS="${FC_GATE_MAX_BLOCKS:-3}"
-LIMIT="${FC_GATE_TIMEOUT:-840}"
+# Stay inside the harness's own hook timeout: Claude Code's hooks.json allows
+# 900 s; Copilot CLI's default is 30 s.
+if [ -n "${COPILOT_CLI:-}" ]; then LIMIT="${FC_GATE_TIMEOUT:-25}"; else LIMIT="${FC_GATE_TIMEOUT:-840}"; fi
+ESC=$(printf '\033')
 
 # Nothing to check until the worker has changed something.
 main=$(fc_repo_field "$FC_STATE" "$FC_WHO" "$FC_COL_MAIN")
@@ -85,21 +89,58 @@ if [ $? -ne 0 ]; then
 $contract_out"
 fi
 
+# run_gate - the gate command in the worktree, killed after LIMIT seconds
+# (exit 124), with or without coreutils' timeout (stock macOS has none).
+run_gate() {
+  local pid watchdog st flag="$GATES/$FC_WHO.timedout"
+  rm -f "$flag"
+  # FC_GATE_PORTABLE_TIMEOUT=1 forces the built-in watchdog (used by the tests).
+  if [ "${FC_GATE_PORTABLE_TIMEOUT:-0}" != 1 ] && command -v timeout >/dev/null 2>&1; then
+    (cd "$WT" && timeout "$LIMIT" bash -c "$gate") >"$LOG" 2>&1 </dev/null
+    return $?
+  fi
+  (cd "$WT" && exec bash -c "$gate") >"$LOG" 2>&1 </dev/null &
+  pid=$!
+  (
+    trap 'kill "$sl" 2>/dev/null; exit 0' TERM
+    sleep "$LIMIT" &
+    sl=$!
+    wait "$sl"
+    if kill -0 "$pid" 2>/dev/null; then
+      : >"$flag"
+      pkill -TERM -P "$pid" 2>/dev/null
+      kill -TERM "$pid" 2>/dev/null
+    fi
+  ) >/dev/null 2>&1 &
+  watchdog=$!
+  wait "$pid"
+  st=$?
+  kill -TERM "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  if [ -f "$flag" ]; then
+    rm -f "$flag"
+    return 124
+  fi
+  return "$st"
+}
+
 gate=$(fc_repo_field "$FC_STATE" "$FC_WHO" "$FC_COL_GATE")
 if [ -z "$reason" ] && [ -n "$gate" ]; then
+  # Record the attempt first: if the harness kills this hook mid-gate, the
+  # next stop on the same state goes through instead of stalling again.
+  printf '%s\n' "$fp" >"$FAIL"
   start=$(date +%s)
-  if command -v timeout >/dev/null 2>&1; then
-    (cd "$WT" && timeout "$LIMIT" bash -c "$gate") >"$LOG" 2>&1 </dev/null
-  else
-    (cd "$WT" && bash -c "$gate") >"$LOG" 2>&1 </dev/null
-  fi
+  run_gate
   rc=$?
   took=$(($(date +%s) - start))
+  if [ "$rc" -eq 124 ]; then
+    printf '{"systemMessage": "%s"}\n' "$(fc_json_escape "feature-gate: '$gate' did not finish within ${LIMIT}s for $FC_WHO; run it yourself before pushing (log: $LOG). Raise FC_GATE_TIMEOUT or keep the gate fast.")"
+    exit 0
+  fi
   if [ "$rc" -ne 0 ]; then
-    if [ "$rc" -eq 124 ]; then what="timed out after ${LIMIT}s"; else what="failed (exit $rc) after ${took}s"; fi
-    reason="Gate for $FC_WHO $what: $gate
+    reason="Gate for $FC_WHO failed (exit $rc) after ${took}s: $gate
 Last lines of $LOG:
-$(tail -n 40 "$LOG" 2>/dev/null)"
+$(tail -n 40 "$LOG" 2>/dev/null | sed "s/${ESC}\[[0-9;?]*[ -\/]*[@-~]//g")"
   fi
 fi
 

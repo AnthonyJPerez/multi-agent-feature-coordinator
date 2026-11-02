@@ -186,7 +186,7 @@ repo_gate() {
 resolve_repo() {
   local spec="$1" ws="$2" p top
   case "$spec" in
-    */* | .) p=$(fc_canon "$spec") ;;
+    */* | . | ..) p=$(fc_canon "$spec") ;;
     *) p=$(fc_canon "$ws/$spec") ;;
   esac
   [ -d "$p" ] || fc_die "repository not found: $p"
@@ -240,8 +240,9 @@ copy_worktreeinclude() {
 # setup_worktree MAIN WTNAME BRANCH BASE FETCH -> prints worktree path
 setup_worktree() {
   local main="$1" wtname="$2" branch="$3" base="$4" fetch="$5"
-  local common wt default existing
-  common=$(fc_canon "$(git -C "$main" rev-parse --git-common-dir)" "$main")
+  local common wt default existing gitdir
+  gitdir=$(git -C "$main" rev-parse --git-common-dir) || fc_die "not a git repository: $main"
+  common=$(fc_canon "$gitdir" "$main")
   if [ "$fetch" = 1 ] && git -C "$main" remote get-url origin >/dev/null 2>&1; then
     git -C "$main" fetch --quiet origin 2>/dev/null || fc_warn "fetch failed in $main; using local refs"
   fi
@@ -261,13 +262,16 @@ setup_worktree() {
     [ "$(fc_canon "$existing" "$wt")" = "$common" ] ||
       fc_die "$wt belongs to another repository"
   elif git -C "$main" show-ref --verify --quiet "refs/heads/$branch"; then
-    git -C "$main" worktree add --quiet "$wt" "$branch" >&2
+    git -C "$main" worktree add --quiet "$wt" "$branch" >&2 ||
+      fc_die "could not create $wt on $branch (is the branch checked out elsewhere?)"
   elif git -C "$main" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-    git -C "$main" worktree add --quiet --track -b "$branch" "$wt" "origin/$branch" >&2
+    git -C "$main" worktree add --quiet --track -b "$branch" "$wt" "origin/$branch" >&2 ||
+      fc_die "could not create $wt from origin/$branch"
   else
     git -C "$main" rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
       fc_die "base ref '$base' not found in $main"
-    git -C "$main" worktree add --quiet --no-track -b "$branch" "$wt" "$base" >&2
+    git -C "$main" worktree add --quiet --no-track -b "$branch" "$wt" "$base" >&2 ||
+      fc_die "could not create $wt on a new branch $branch"
   fi
   copy_worktreeinclude "$main" "$wt"
   fc_canon "$wt"
@@ -336,7 +340,7 @@ cmd_start() {
     ws=$(fc_canon "$WS_OPT")
   else
     case "$anchor" in
-      */*) ws=$(dirname "$(fc_canon "$anchor")") ;;
+      */* | . | ..) ws=$(dirname "$(fc_canon "$anchor")") ;;
       *) ws=$(pwd -P) ;;
     esac
   fi
@@ -1168,22 +1172,23 @@ cmd_finish() {
     printf 'Not finishing %s:%b\nMerge or resolve these first, or pass --force to discard them.\n' "$id" "$problems" >&2
     return 1
   fi
+  local unfinished=""
   for who in $(fc_participants "$state"); do
     main=$(field "$state" "$who" "$FC_COL_MAIN")
     wt=$(field "$state" "$who" "$FC_COL_WT")
     wtname=$(basename "$wt")
     if [ -d "$wt" ]; then
       if [ "$force" = 1 ]; then
-        git -C "$main" worktree remove --force --force "$wt" || fc_warn "could not remove $wt"
+        git -C "$main" worktree remove --force --force "$wt" || { unfinished="$unfinished $who"; continue; }
       else
-        git -C "$main" worktree remove "$wt" || fc_warn "could not remove $wt"
+        git -C "$main" worktree remove "$wt" || { unfinished="$unfinished $who"; continue; }
       fi
     fi
     git -C "$main" worktree prune 2>/dev/null || true
     if [ "$keep_branches" != 1 ]; then
       for b in $(participant_branches "$state" "$who" "$id"); do
         if git -C "$main" show-ref --verify --quiet "refs/heads/$b"; then
-          git -C "$main" branch -D "$b" >/dev/null
+          git -C "$main" branch -D "$b" >/dev/null || fc_warn "could not delete branch $b in $main"
         fi
       done
     fi
@@ -1191,6 +1196,11 @@ cmd_finish() {
     rm -f "$common/feature-coordinator/$wtname.env"
     printf 'cleaned %s\n' "$who"
   done
+  if [ -n "$unfinished" ]; then
+    printf 'Could not remove the worktree of:%s. Their branches, records and the feature state were kept;\n' "$unfinished" >&2
+    printf 'fix the cause (git says why above) and run finish again.\n' >&2
+    return 1
+  fi
   if [ "$keep_state" != 1 ]; then
     mkdir -p "$(dirname "$state")/_archive"
     mv "$state" "$(dirname "$state")/_archive/$id-$(date -u +%Y%m%dT%H%M%SZ)"
