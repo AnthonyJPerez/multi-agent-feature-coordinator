@@ -832,6 +832,10 @@ tool="${P_tool_name:-${P_toolName:-}}"
 tool=$(lower "$tool")
 dbg "tool <$tool>, identity $FC_WHO ($FC_ROLE) in $OWN, bash $BASH_VERSION"
 dbg "parsed: command=<${P_command-unset}> array=<${P_command_array-unset}> cmd=<${P_cmd-unset}>"
+if [ "${FC_GUARD_DEBUG:-0}" = 1 ]; then
+  dbg "payload (${#PAYLOAD} bytes): $PAYLOAD"
+  dbg "awk $(awk --version 2>&1 | head -n 1) says: $(printf '%s' "$PAYLOAD" | LC_ALL=C awk -v keys="cwd tool_name $ARG_KEYS" "$FC_JSON_AWK" 2>&1 | tr '\002\003\004' '\\|^')"
+fi
 [ -n "$tool" ] || exit 0
 
 if [ -n "${P_toolArgs+x}" ]; then
