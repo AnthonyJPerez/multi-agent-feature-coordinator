@@ -50,6 +50,12 @@ Instructions for agents (and people) changing this repository.
 - Values that come from configuration are validated in `fc_conf_validate`.
 - Keep `${var//pattern/replacement}` replacements literal:
   `fc-lib` disables bash 5.2's `patsub_replacement`.
+- Never put literal single quotes inside a double-quoted string inside
+  `$(...)` that is itself inside double quotes: bash 3.2 mis-parses it. Quote
+  with parameter expansion and variables instead (see `q()` and
+  `json_values`).
+- Parse JSON with `fc_json_load` (awk), not `[[ =~ ]]`: macOS's regex engine
+  is pathologically slow on large payloads and differs on edge cases.
 
 ## Before you commit
 

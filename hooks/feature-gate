@@ -135,7 +135,7 @@ if [ -z "$reason" ] && [ -n "$gate" ]; then
   rc=$?
   took=$(($(date +%s) - start))
   if [ "$rc" -eq 124 ]; then
-    printf '{"systemMessage": "%s"}\n' "$(fc_json_escape "feature-gate: '$gate' did not finish within ${LIMIT}s for $FC_WHO; run it yourself before pushing (log: $LOG). Raise FC_GATE_TIMEOUT or keep the gate fast.")"
+    printf '{"systemMessage": "%s"}\n' "$(fc_json_escape "feature-gate: the gate for $FC_WHO ($gate) did not finish within ${LIMIT}s; run it yourself before pushing (log: $LOG). Raise FC_GATE_TIMEOUT or keep the gate fast.")"
     exit 0
   fi
   if [ "$rc" -ne 0 ]; then

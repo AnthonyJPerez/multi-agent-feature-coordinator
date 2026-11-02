@@ -60,10 +60,10 @@ HOME_CANON=$(fc_canon "${HOME:-/nonexistent}")
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 deny() {
+  local who="the worker for $FC_REPO"
+  [ "$FC_ROLE" = anchor ] && who="the coordinator"
   printf 'feature-coordinator worktree guard: %s\n' "$1" >&2
-  printf 'This session is %s for feature %s and edits only %s.\n' \
-    "$(if [ "$FC_ROLE" = anchor ]; then printf 'the coordinator'; else printf 'the worker for %s' "$FC_REPO"; fi)" \
-    "$FC_ID" "$OWN" >&2
+  printf 'This session is %s for feature %s and edits only %s.\n' "$who" "$FC_ID" "$OWN" >&2
   if [ -n "${2:-}" ]; then printf '%s\n' "$2" >&2; fi
   exit 2
 }
@@ -832,15 +832,20 @@ fi
 
 # json_values KEY - KEY's string value, or the elements of a string array
 # re-quoted for the shell and joined by spaces; NUL-terminated.
+# (Quoting is done with parameter expansion: bash 3.2 mis-parses single
+# quotes inside a double-quoted string inside $(...).)
+EOT=$(printf '\004')
+SQ="'"
+SQ_ESC="'\\''"
 json_values() {
   local var="${AP}$1" arr="${AP}$1_array" v="" e rest
   [ -n "${!var+x}" ] || return 0
   if [ -n "${!arr:-}" ]; then
-    rest="${!var}"$'\004'
+    rest="${!var}$EOT"
     while [ -n "$rest" ]; do
-      e="${rest%%$'\004'*}"
-      rest="${rest#*$'\004'}"
-      v="$v '$(printf '%s' "$e" | sed "s/'/'\\\\''/g")'"
+      e="${rest%%"$EOT"*}"
+      rest="${rest#*"$EOT"}"
+      v="$v $SQ${e//$SQ/$SQ_ESC}$SQ"
     done
     printf '%s\0' "${v# }"
   else
