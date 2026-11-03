@@ -2,3 +2,4 @@
 *.swp
 /dist/
 /tests/.tmp/
+/start-claude.ps1
